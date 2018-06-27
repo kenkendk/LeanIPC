@@ -10,7 +10,7 @@ build: $(PROJECT_NAME).sln $(DEPENDS_CS)
 	# dotnet build /p:Configuration=Release Unittest
 	msbuild /p:Configuration=Release $(PROJECT_NAME).sln
 
-nupkg/CoCoL.$(VERSION).nupkg: $(PROJECT_NAME).nuspec
+nupkg/$(PROJECT_NAME).$(VERSION).nupkg: $(PROJECT_NAME).nuspec
 	nuget pack $(PROJECT_NAME).nuspec
 
 pack: build nupkg/$(PROJECT_NAME).$(VERSION).nupkg
