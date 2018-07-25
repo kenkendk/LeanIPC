@@ -713,7 +713,7 @@ namespace LeanIPC
                     ix++;
                 }
                 else
-                    throw new Exception("Failed to parse short type definition");
+                    throw new Exception($"Failed to parse short type definition: {s}");
             }
 
             lock(m_lock)
