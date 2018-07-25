@@ -151,6 +151,21 @@ namespace LeanIPC
         }
 
         /// <summary>
+        /// Registers a local object for invocation by the remote.
+        /// </summary>
+        /// <returns>An awaitable task.</returns>
+        /// <param name="item">The local object to expose to the remote peer.</param>
+        /// <param name="type">The type to register the object as, if <c>null</c>, the object type is used</param>
+        public async Task RegisterLocalObjectOnRemote(object item, Type type = null)
+        {
+            if (item == null)
+                throw new ArgumentNullException(nameof(item));
+            
+            if (await m_remoteObjects.RegisterLocalObjectAsync(item))
+                await m_connection.SendPassthroughAsync(Command.RegisterRemoteObject, new RegisterRemoteObjectRequest(type ?? item.GetType(), m_remoteObjects.GetLocalHandle(item)));            
+        }
+
+        /// <summary>
         /// Invokes a method remotely, and returns the result
         /// </summary>
         /// <returns>The result of the remote invocation.</returns>
@@ -191,9 +206,8 @@ namespace LeanIPC
 
             // Register each local reference item with the remote
             foreach (var arg in arguments)
-                if (arg != null && m_typeSerializer.GetAction(arg.GetType()) == SerializationAction.Reference)
-                    if (await m_remoteObjects.RegisterLocalObjectAsync(arg))
-                        await m_connection.SendPassthroughAsync(Command.RegisterRemoteObject, new RegisterRemoteObjectRequest(arg.GetType(), m_remoteObjects.GetLocalHandle(arg))); 
+                if (arg != null && (m_typeSerializer.GetAction(arg.GetType()) == SerializationAction.Reference || m_remoteObjects.IsLocalObject(arg)))
+                    await RegisterLocalObjectOnRemote(arg);
 
             var res = await m_connection.SendAndWaitAsync(
                 Command.InvokeRemoteMethod,
