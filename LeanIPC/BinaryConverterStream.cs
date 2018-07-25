@@ -808,6 +808,7 @@ namespace LeanIPC
             if (action != SerializationAction.Fail)
                 return WriteObjectAsync((object)item);
 
+            System.Diagnostics.Trace.WriteLine($"Unsupported type: {type.FullName}");
             throw new Exception($"Unsupported type: {type.FullName}");
         }
 
