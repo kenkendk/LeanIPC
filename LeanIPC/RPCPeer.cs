@@ -469,7 +469,14 @@ namespace LeanIPC
                 if (hasResponded)
                     throw;
 
-                await m_connection.SendErrorResponseAsync(requestId, Command.InvokeRemoteMethod, ex);
+                Console.WriteLine("Error on invoke: {0}", ex);
+
+                // Unwrap this to get a better error message to pass on
+                var x = ex;
+                if (x != null && x is System.Reflection.TargetInvocationException)
+                    x = ((System.Reflection.TargetInvocationException)x).InnerException;
+
+                await m_connection.SendErrorResponseAsync(requestId, Command.InvokeRemoteMethod, x ?? ex);
             }
 
         }
