@@ -437,9 +437,13 @@ namespace LeanIPC
             }
             else
             {
+                System.Diagnostics.Trace.WriteLineIf(TRACE, $"Array-Write: {item.LongLength} items");
+
                 await WriteInt64Async(item.LongLength);
                 foreach (var n in item)
                     await WriteAnyAsync<T>(n);
+
+                System.Diagnostics.Trace.WriteLineIf(TRACE, $"Array-Wrote: {item.LongLength} items");
             }
         }
 
