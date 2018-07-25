@@ -6,8 +6,6 @@ namespace InteropTester
     {
         public static void Main(string[] args)
         {
-            // TODO: Write a README file
-
             var ut = new Unittest.IPCTypeTest();
             ut.TestEchoWithAllPrimitives();
             ut.TestEchoWithAllPrimitivePairs();
