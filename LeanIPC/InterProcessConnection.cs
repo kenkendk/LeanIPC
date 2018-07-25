@@ -463,6 +463,8 @@ namespace LeanIPC
         /// <param name="postEmitHandler">A method invoked after sending the message, while the send lock is being held</param>
         internal async Task SendPassthroughAsync(Command command, Type[] types, object[] data, Func<Task> preEmitHandler = null, Func<Task> postEmitHandler = null)
         {
+            await m_initialized.Task;
+            
             if (m_isShutDown)
                 throw new ObjectDisposedException("Cannot send new messages after the connection is closed");
 
