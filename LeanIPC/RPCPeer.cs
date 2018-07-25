@@ -71,7 +71,7 @@ namespace LeanIPC
         {
             m_connection = connection ?? throw new ArgumentNullException(nameof(connection));
             m_connection.AddMessageHandler(HandleMessage);
-            m_allowedTypes.AddRange(allowedTypes ?? new Type[0]);
+            m_allowedTypes.AddRange((allowedTypes ?? new Type[0]).Where(x => x != null));
             if (m_allowedTypes.Count != 0 && m_filterFunction == null)
                 filterPredicate = (a, b) => true;
 
