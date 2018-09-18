@@ -2,7 +2,7 @@
 <package >
   <metadata>
     <id>LeanIPC</id>
-    <version>0.9</version>
+    <version>0.9.1</version>
     <title>LeanIPC</title>
     <authors>Kenneth Skovhede</authors>
     <owners>Kenneth Skovhede</owners>
@@ -10,7 +10,7 @@
     <projectUrl>https://github.com/kenkendk/leanipc</projectUrl>
     <requireLicenseAcceptance>false</requireLicenseAcceptance>
     <description>Library for interprocedure communications and remote procedure calls</description>
-    <releaseNotes>Initial release.</releaseNotes>
+    <releaseNotes>Fixed issues with IPEndPoint serialization, improved error messages.</releaseNotes>
     <copyright>Copyright 2018, Kenneth Skovhede</copyright>
     <tags>IPC RPC</tags>
   </metadata>
