@@ -15,7 +15,7 @@ namespace LeanIPC
         /// <summary>
         /// Flag to enable trace output
         /// </summary>
-        private const bool TRACE = true;
+        private const bool TRACE = false;
 
         /// <summary>
         /// An interval to determine how often to poll the spawned process
