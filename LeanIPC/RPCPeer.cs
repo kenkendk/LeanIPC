@@ -302,7 +302,7 @@ namespace LeanIPC
                 }
 
                 if (action == SerializationAction.Reference || m_remoteObjects.IsLocalObject(arg))
-                    await RegisterLocalObjectOnRemote(arg);
+                    await RegisterLocalObjectOnRemote(arg, tp);
                 else if (action == SerializationAction.Fail)
                     throw new Exception($"Cannot pass item with type {arg.GetType()} ({types[i]})");
             }
