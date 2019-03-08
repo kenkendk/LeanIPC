@@ -13,51 +13,6 @@ namespace LeanIPC
     public static class ProxyCreator
     {
         /// <summary>
-        /// Helper class to expose the names of the protected methods
-        /// in the <see cref="RemoteObject"/> class
-        /// </summary>
-        private class NameBreaker : RemoteObject
-        {
-            /// <summary>
-            /// The name of the Set method
-            /// </summary>
-            public static readonly string RemoteSetAsyncName = nameof(RemoteInvokePropertySetAsync);
-            /// <summary>
-            /// The name of the Get method
-            /// </summary>
-            public static readonly string RemoteGetAsyncName = nameof(RemoteInvokePropertyGetAsync);
-            /// <summary>
-            /// The name of the Method method
-            /// </summary>
-            public static readonly string RemoteMethodAsyncName = nameof(RemoteInvokeMethodAsync);
-
-            /// <summary>
-            /// The name of the Set method
-            /// </summary>
-            public static readonly string RemoteSetSyncName = nameof(RemoteInvokePropertySet);
-            /// <summary>
-            /// The name of the Get method
-            /// </summary>
-            public static readonly string RemoteGetSyncName = nameof(RemoteInvokePropertyGet);
-            /// <summary>
-            /// The name of the Method method
-            /// </summary>
-            public static readonly string RemoteMethodSyncName = nameof(RemoteInvokeMethod);
-
-            /// <summary>
-            /// Unused constructor
-            /// </summary>
-            /// <param name="peer">Unused.</param>
-            /// <param name="type">Unused.</param>
-            /// <param name="handle">Unused.</param>
-            public NameBreaker(RPCPeer peer, Type type, long handle) 
-                : base(peer, type, handle)
-            {
-                throw new NotImplementedException();
-            }
-        }
-
-        /// <summary>
         /// The lock guarding <see cref="_interfaceCache"/>
         /// </summary>
         private static readonly object _lock = new object();
@@ -78,24 +33,41 @@ namespace LeanIPC
         /// <returns>The remote proxy.</returns>
         /// <param name="peer">The peer to invoke remote methods on.</param>
         /// <param name="type">The remote type to make the proxy for.</param>
-        /// <param name="interface">The interface to create the type for</param>
+        /// <param name="proxytype">The type to create a proxy with</param>
         /// <param name="handle">The remote handle.</param>
-        public static IRemoteInstance CreateRemoteProxy(RPCPeer peer, Type type, Type @interface, long handle)
+        /// <typeparam name="TBase">The type that the proxy is interfacing with</typeparam>
+        public static object CreateAutomaticProxy<TBase>(RPCPeer peer, Type type, Type proxytype, long handle)
+            where TBase : IProxyHelper
         {
-            if (peer == null)
-                throw new ArgumentNullException(nameof(peer));
+            return CreateRemoteProxy(peer, type, proxytype, typeof(TBase), handle);
+        }
+
+        /// <summary>
+        /// Creates a proxy class for the given interface that makes remote invocations
+        /// </summary>
+        /// <returns>The remote proxy.</returns>
+        /// <param name="peer">The peer to invoke remote methods on.</param>
+        /// <param name="type">The remote type to make the proxy for.</param>
+        /// <param name="proxytype">The type to create a proxy with</param>
+        /// <param name="handlertype">The type that the proxy is interfacing with, must implement IProxyHelper</param>
+        /// <param name="handle">The remote handle.</param>
+        public static object CreateRemoteProxy(RPCPeer peer, Type type, Type proxytype, Type handlertype, long handle)
+        {
             if (type == null)
                 throw new ArgumentNullException(nameof(type));
-            if (@interface == null)
-                throw new ArgumentNullException(nameof(@interface));
+            if (proxytype == null)
+                throw new ArgumentNullException(nameof(proxytype));
+            if (handlertype == null)
+                throw new ArgumentNullException(nameof(handlertype));
 
-            if (!@interface.IsInterface)
-                throw new Exception($"The type {type} is not an interface");
 
             lock (_lock)
             {
-                if (!_interfaceCache.ContainsKey(@interface))
+                if (!_interfaceCache.ContainsKey(proxytype))
                 {
+                    if (!handlertype.GetInterfaces().Any(x => x == typeof(IProxyHelper)))
+                        throw new Exception($"The type {handlertype} does not implement {typeof(IProxyHelper)}");
+
                     var typename = "DynamicProxy." + type.FullName + "." + Guid.NewGuid().ToString("N").Substring(0, 6);
 
                     // Build an assembly and a module to contain the type
@@ -106,21 +78,104 @@ namespace LeanIPC
                     // The RemoteObject constructor args
                     var constructorArgs = new Type[] { typeof(RPCPeer), typeof(Type), typeof(long) };
 
-                    // Create the type definition
-                    var typeBuilder = module.DefineType(typename, TypeAttributes.Public, typeof(RemoteObject), new Type[] { @interface });
+                    var interfaces = new List<Type>();
+                    if (proxytype.IsInterface)
+                        interfaces.Add(proxytype);
 
-                    // Create the constructor that invokes the base type
+                    if (!proxytype.GetInterfaces().Contains(typeof(IRemoteInstance)) && handlertype.GetInterfaces().Contains(typeof(IRemoteInstance)))
+                        interfaces.Add(typeof(IRemoteInstance));
+                    if (!proxytype.GetInterfaces().Contains(typeof(IDisposable)))
+                        interfaces.Add(typeof(IDisposable));
+
+                    var basetype = proxytype.IsInterface
+                        ? typeof(object)
+                        : proxytype;
+
+                    // Create the type definition
+                    var typeBuilder = module.DefineType(typename, TypeAttributes.Public, basetype, interfaces.ToArray());
+
+                    // Create a field to store the remote object instance
+                    var remotefld = typeBuilder.DefineField("__remoteHandle", handlertype, FieldAttributes.Private | FieldAttributes.InitOnly);
+
+                    // Create the constructor that initializes the remote object field
                     var constructor = typeBuilder.DefineConstructor(MethodAttributes.Public, CallingConventions.Standard, constructorArgs);
                     var construtorIL = constructor.GetILGenerator();
+                    var conm = handlertype.GetConstructor(BindingFlags.Public | BindingFlags.Instance, null, constructorArgs, null);
+                    if (conm == null)
+                        throw new Exception($"The type {handlertype} does not have a constructor that takes the types ({typeof(RPCPeer)}, {typeof(Type)}, {typeof(long)})");
                     construtorIL.Emit(OpCodes.Ldarg_0);
                     construtorIL.Emit(OpCodes.Ldarg_1);
                     construtorIL.Emit(OpCodes.Ldarg_2);
                     construtorIL.Emit(OpCodes.Ldarg_3);
-                    construtorIL.Emit(OpCodes.Call, typeof(RemoteObject).GetConstructor(BindingFlags.Public | BindingFlags.Instance, null, constructorArgs, null));
+                    construtorIL.Emit(OpCodes.Newobj, conm);
+                    construtorIL.Emit(OpCodes.Stfld, remotefld);
                     construtorIL.Emit(OpCodes.Ret);
 
+                    // Explicitly wire the IRemoteInstance interface to call remotefld directly
+                    // Since we map this directly, we can treat property access as methods
+                    var explictMethods =
+                        (
+                            interfaces.Contains(typeof(IRemoteInstance))
+                            ? typeof(IRemoteInstance).GetMethods(BindingFlags.DeclaredOnly | BindingFlags.Public | BindingFlags.Instance)
+                            : new MethodInfo[0]
+                        )
+                        .Concat(
+                            typeof(IDisposable).GetMethods(BindingFlags.DeclaredOnly | BindingFlags.Public | BindingFlags.Instance)
+                        );
+
+                    foreach (var sourceMethod in explictMethods)
+                    {
+                        var parameterTypes = sourceMethod.GetParameters().Select(x => x.ParameterType).ToArray();
+
+                        // If the proxy type is IDisposable, we need to call the remote dispose before the local
+                        var isSpecialDispose = sourceMethod.DeclaringType == typeof(IDisposable) && proxytype.GetInterfaces().Contains(typeof(IDisposable));
+
+                        // Replicate the source method
+                        var method = typeBuilder.DefineMethod(
+                            (isSpecialDispose ? string.Empty : sourceMethod.DeclaringType.Name + ".") + sourceMethod.Name,
+                            MethodAttributes.Public | MethodAttributes.Final | MethodAttributes.Virtual,
+                            CallingConventions.Standard,
+                            sourceMethod.ReturnType,
+                            parameterTypes
+                        );
+
+
+                        // Write the IL to call the method through the interface
+                        var methodIL = method.GetILGenerator();
+
+                        // Invoke dispose on the remote instance first
+                        if (isSpecialDispose)
+                        {
+                            methodIL.Emit(OpCodes.Ldarg_0);
+                            methodIL.Emit(OpCodes.Ldfld, remotefld);
+                            methodIL.Emit(OpCodes.Ldstr, sourceMethod.Name);
+                            EmitTypeArray(methodIL, parameterTypes);
+                            EmitArgumentArray(methodIL, parameterTypes, 1);
+
+                            var methods = handlertype
+                                .GetMethods(BindingFlags.Public | BindingFlags.Instance)
+                                .Where(x => x.Name == nameof(IProxyHelper.HandleInvokeMethod));
+
+                            methodIL.Emit(OpCodes.Callvirt, methods.First());
+                            methodIL.Emit(OpCodes.Pop);
+                        }
+
+                        // Pass the call to the IProxyHelper instance
+                        methodIL.Emit(OpCodes.Ldarg_0);
+                        methodIL.Emit(OpCodes.Ldfld, remotefld);
+                        for (var i = 0; i < parameterTypes.Length; i++)
+                            EmitLdarg(methodIL, i + 1);
+                        methodIL.Emit(OpCodes.Callvirt, sourceMethod);
+                        methodIL.Emit(OpCodes.Ret);
+
+                        // Specify that our specially named method implements the interface method
+                        if (!isSpecialDispose)
+                            typeBuilder.DefineMethodOverride(method, sourceMethod);
+                    }
+
+
                     // Add all methods
-                    foreach (var sourceMethod in AllImplementedMethods(@interface, IGNORETYPES))
+                    foreach (var sourceMethod in AllImplementedMethods(proxytype, IGNORETYPES))
                     {                        
                         var parameterTypes = sourceMethod.GetParameters().Select(x => x.ParameterType).ToArray();
 
@@ -134,6 +189,7 @@ namespace LeanIPC
                         );
                         var methodIL = method.GetILGenerator();
                         methodIL.Emit(OpCodes.Ldarg_0);
+                        methodIL.Emit(OpCodes.Ldfld, remotefld);
                         methodIL.Emit(OpCodes.Ldstr, sourceMethod.Name);
                         EmitTypeArray(methodIL, parameterTypes);
                         EmitArgumentArray(methodIL, parameterTypes, 1);
@@ -143,9 +199,9 @@ namespace LeanIPC
                             || 
                             (sourceMethod.ReturnType.IsConstructedGenericType && sourceMethod.ReturnType.GetGenericTypeDefinition() == typeof(Task<>));
 
-                        var methods = typeof(RemoteObject)
-                            .GetMethods(BindingFlags.NonPublic | BindingFlags.Instance)
-                            .Where(x => x.Name == (isAsyncResult ? NameBreaker.RemoteMethodAsyncName : NameBreaker.RemoteMethodSyncName));
+                        var methods = handlertype
+                            .GetMethods(BindingFlags.Public | BindingFlags.Instance)
+                            .Where(x => x.Name == (isAsyncResult ? nameof(IProxyHelper.HandleInvokeMethodAsync) : nameof(IProxyHelper.HandleInvokeMethod)));
 
                         if (sourceMethod.ReturnType == typeof(void))
                         {
@@ -173,7 +229,7 @@ namespace LeanIPC
                     }
 
                     // Add all properties
-                    foreach (var sourceProperty in AllImplementedProperties(@interface, IGNORETYPES))
+                    foreach (var sourceProperty in AllImplementedProperties(proxytype, IGNORETYPES))
                     {
                         var indexParameters = sourceProperty.GetIndexParameters().Select(x => x.ParameterType).ToArray();
 
@@ -195,6 +251,7 @@ namespace LeanIPC
 
                             var getMethodIL = getMethod.GetILGenerator();
                             getMethodIL.Emit(OpCodes.Ldarg_0);
+                            getMethodIL.Emit(OpCodes.Ldfld, remotefld);
                             getMethodIL.Emit(OpCodes.Ldstr, sourceProperty.Name);
                             EmitTypeArray(getMethodIL, indexParameters);
                             EmitArgumentArray(getMethodIL, indexParameters, 1);
@@ -204,9 +261,9 @@ namespace LeanIPC
                                 &&
                                 sourceProperty.PropertyType.GetGenericTypeDefinition() == typeof(Task<>);
 
-                            var baseGetMethod = typeof(RemoteObject)
-                                .GetMethods(BindingFlags.NonPublic | BindingFlags.Instance)
-                                .Where(x => x.Name == (isAsyncResult ? NameBreaker.RemoteGetAsyncName : NameBreaker.RemoteGetSyncName))
+                            var baseGetMethod = handlertype
+                                .GetMethods(BindingFlags.Public | BindingFlags.Instance)
+                                .Where(x => x.Name == (isAsyncResult ? nameof(IProxyHelper.HandleInvokePropertyGetAsync) : nameof(IProxyHelper.HandleInvokePropertyGet)))
                                 .Where(x => x.IsGenericMethodDefinition)
                                 .First();
 
@@ -233,6 +290,7 @@ namespace LeanIPC
 
                             var setMethodIL = setMethod.GetILGenerator();
                             setMethodIL.Emit(OpCodes.Ldarg_0);
+                            setMethodIL.Emit(OpCodes.Ldfld, remotefld);
                             setMethodIL.Emit(OpCodes.Ldstr, sourceProperty.Name);
                             setMethodIL.Emit(OpCodes.Ldarg_1);
                             if (sourceProperty.PropertyType.IsValueType)
@@ -241,21 +299,21 @@ namespace LeanIPC
                             EmitTypeArray(setMethodIL, indexParameters);
                             EmitArgumentArray(setMethodIL, indexParameters, 2);
 
-                            setMethodIL.Emit(OpCodes.Call, typeof(RemoteObject).GetMethod(NameBreaker.RemoteSetSyncName, BindingFlags.NonPublic | BindingFlags.Instance));
+                            setMethodIL.Emit(OpCodes.Call, handlertype.GetMethod(nameof(IProxyHelper.HandleInvokePropertySet), BindingFlags.Public | BindingFlags.Instance));
                             setMethodIL.Emit(OpCodes.Ret);
 
                             property.SetSetMethod(setMethod);
                         }
                     }
 
-                    _interfaceCache[@interface] = typeBuilder.CreateTypeInfo();
+                    _interfaceCache[proxytype] = typeBuilder.CreateTypeInfo();
                 }
             }
 
             // Return the instance
             //var typeInfo = typeBuilder.CreateTypeInfo();
             //var instanceConstructor = typeInfo.GetConstructor(constructorArgs);
-            return (RemoteObject)Activator.CreateInstance(_interfaceCache[@interface], new object[] { peer, type, handle });
+            return Activator.CreateInstance(_interfaceCache[proxytype], new object[] { peer, type, handle });
         }
 
         /// <summary>
@@ -309,25 +367,29 @@ namespace LeanIPC
             {
                 foreach (var method in type.GetMethods(BindingFlags.Public | BindingFlags.Instance))
                 {
-                    var signature = string.Join(":",
-                        new string[] {
+                    // Only return implementable methods
+                    if (starttype.IsInterface || method.IsVirtual)
+                    {
+                        var signature = string.Join(":",
+                            new string[] {
                             method.ReturnType.FullName,
                             method.Name,
+                            }
+                            .Concat(
+                                method.GetParameters().Select(x => x.ParameterType.FullName)
+                            )
+                        );
+
+                        if (!visited.Contains(signature))
+                        {
+                            visited.Add(signature);
+
+                            // Skip the methods if they are just property accessors
+                            if (type.GetProperties().Any(x => x.SetMethod == method || x.GetMethod == method))
+                                continue;
+
+                            yield return method;
                         }
-                        .Concat(
-                            method.GetParameters().Select(x => x.ParameterType.FullName)
-                        )
-                    );
-
-                    if (!visited.Contains(signature))
-                    {
-                        visited.Add(signature);
-
-                        // Skip the methods if they are just property accessors
-                        if (type.GetProperties().Any(x => x.SetMethod == method || x.GetMethod == method))
-                            continue;
-
-                        yield return method;
                     }
                 }
             }                
@@ -505,7 +567,6 @@ namespace LeanIPC
                     break;
             }
         }
-
     }
 
     /// <summary>
@@ -523,82 +584,29 @@ namespace LeanIPC
         /// <param name="handle">The remote handle.</param>
         public static IRemoteInstance WrapRemote(this RPCPeer peer, Type type, Type @interface, long handle)
         {
-            if (!@interface.IsInterface)
-                throw new Exception($"The type {@interface} is not an interface");
-
-            return ProxyCreator.CreateRemoteProxy(peer, type, @interface, handle);
-
-            //var generator = new ProxyGenerator();
-            //var proxy = generator.CreateInterfaceProxyWithoutTarget(type, new RemoteProxyInterceptor(peer, type, handle));
-            //return (IRemoteInstance)proxy;
+            return (IRemoteInstance)ProxyCreator.CreateAutomaticProxy<RemoteObject>(peer, type, @interface, handle);
         }
 
         /// <summary>
-        /// Creates a new remote instance, requires that a proxy generator is present on the peer
+        /// Creates a proxy instance that wraps a dictionary of properties
         /// </summary>
-        /// <returns>The create.</returns>
-        /// <param name="peer">The peer to create the instance on.</param>
-        /// <param name="type">The type of the remote object to create.</param>
-        /// <param name="arguments">The arguments to the constructor.</param>
-        /// <typeparam name="T">The return type</typeparam>
-        public static async Task<T> CreateAsync<T>(this RPCPeer peer, Type type, params object[] arguments)
+        /// <returns>The property decomposed instance.</returns>
+        /// <param name="peer">The unused peer instance.</param>
+        /// <param name="type">The remote type being wrapped.</param>
+        /// <param name="interface">The interface presented as the wrapped.</param>
+        /// <param name="values">The decomposed property values.</param>
+        public static object WrapPropertyDecomposedInstance(this RPCPeer peer, Type type, Type @interface, object[] values)
         {
-            if (!typeof(T).IsInterface)
-                throw new Exception($"Return type {typeof(T)} is not an interface");
-            
-            var res = await CreateAsync(peer, type, arguments);
-            return (T)res;
+            var d = new Dictionary<string, object>();
+            var names = (string[])values[0];
+            for (var i = 0; i < names.Length; i++)
+                d[names[i]] = values[i + 1];
+            var p = ProxyCreator.CreateAutomaticProxy<PropertyDecomposedObject>(peer, type, @interface, 0);
+            var h = p.GetType().GetField("__remoteHandle", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(p) as PropertyDecomposedObject;
+            h.m_values = d;
+            return p;
         }
 
-        /// <summary>
-        /// Creates a new remote instance
-        /// </summary>
-        /// <returns>The create.</returns>
-        /// <param name="peer">The peer to create the instance on.</param>
-        /// <param name="type">The type of the remote object to create.</param>
-        /// <param name="arguments">The arguments to the constructor.</param>
-        public static Task<IRemoteInstance> CreateAsync(this RPCPeer peer, Type type, params object[] arguments)
-        {
-            arguments = arguments ?? new object[0];
-            var constructors = type.GetConstructors().Where(x => x.GetParameters().Length == arguments.Length).ToArray();
-            if (constructors.Length == 0)
-                throw new Exception($"Found no constructor on type {type} that takes {arguments.Length} arguments");
-            if (constructors.Length != 1)
-                throw new Exception($"Found multiple constructor on type {type} that takes {arguments.Length} arguments, please provide the constructor directly");
-            return CreateAsync(peer, constructors.First(), arguments);
-        }
-
-        /// <summary>
-        /// Creates a new remote proxy
-        /// </summary>
-        /// <returns>The remote instance.</returns>
-        /// <param name="peer">The peer to create the instance on.</param>
-        /// <param name="constructor">The constructor to use.</param>
-        /// <param name="arguments">The arguments to the constructor.</param>
-        public static async Task<IRemoteInstance> CreateAsync(RPCPeer peer, ConstructorInfo constructor, params object[] arguments)
-        {
-            return (IRemoteInstance)await peer.InvokeRemoteMethodAsync(0, constructor, arguments, false);
-        }
-
-
-        // Untested code for doing the above with Castle.DynamicProxy
-
-        ///// <summary>
-        ///// The interceptor that captures and invokes methods remotely
-        ///// </summary>
-        //private class RemoteProxyInterceptor : RemoteObject, IInterceptor
-        //{
-        //    public RemoteProxyInterceptor(RPCPeer peer, Type type, long handle)
-        //        : base(peer, type, handle)
-        //    {
-        //    }
-
-        //    void IInterceptor.Intercept(IInvocation invocation)
-        //    {
-        //        invocation.ReturnValue = base.m_peer.InvokeRemoteMethodAsync(m_handle, invocation.Method, invocation.Arguments, false).Result;
-        //    }
-
-        //}
     }
 
 

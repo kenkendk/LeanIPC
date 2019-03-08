@@ -309,7 +309,8 @@ namespace LeanIPC
         /// </summary>
         /// <returns>An awaitable task.</returns>
         /// <param name="item">The object value to write.</param>
-        public async Task WriteObjectAsync(object item)
+        /// <param name="treatAs">The type to treat the object as</param>
+        public async Task WriteObjectAsync(object item, Type treatAs)
         {
             if (item == null)
                 await WriteUInt8Async(0);
@@ -328,13 +329,13 @@ namespace LeanIPC
                 }
                 else
                 {
-                    var parts = m_serializer.SerializeObject(item);
+                    var parts = m_serializer.SerializeObject(item, treatAs);
 
                     await WriteUInt8Async(3);
-                    await WriteStringAsync(m_serializer.GetShortTypeName(item.GetType()));
-                    await WriteStringAsync(m_serializer.GetShortTypeDefinition(parts.Item1));
-                    for (var i = 0; i < parts.Item1.Length; i++)
-                        await WriteAnyAsync(parts.Item2[i], parts.Item1[i]);
+                    await WriteStringAsync(m_serializer.GetShortTypeName(parts.Item1));
+                    await WriteStringAsync(m_serializer.GetShortTypeDefinition(parts.Item2));
+                    for (var i = 0; i < parts.Item2.Length; i++)
+                        await WriteAnyAsync(parts.Item3[i], parts.Item2[i]);
                 }
             }
         }
@@ -452,7 +453,7 @@ namespace LeanIPC
         /// </summary>
         /// <returns>An awaitable task.</returns>
         /// <param name="item">The dictionary to write.</param>
-        public async Task WriteDictionaryAsync<TKey, TValue>(Dictionary<TKey, TValue> item)
+        public async Task WriteDictionaryAsync<TKey, TValue>(IDictionary<TKey, TValue> item)
         {
             if (item == null)
             {
@@ -470,8 +471,27 @@ namespace LeanIPC
         /// Writes a stream without writing a type header
         /// </summary>
         /// <returns>An awaitable task.</returns>
+        /// <param name="item">The sequence to write.</param>
+        public async Task WriteEnumerableAsync<T>(IEnumerable<T> item)
+        {
+            if (item == null)
+            {
+                await WriteInt32Async(-1);
+            }
+            else
+            {
+                await WriteInt32Async(item.Count());
+                foreach (var n in item)
+                    await WriteAnyAsync<T>(n);
+            }
+        }
+
+        /// <summary>
+        /// Writes a stream without writing a type header
+        /// </summary>
+        /// <returns>An awaitable task.</returns>
         /// <param name="item">The dictionary to write.</param>
-        public async Task WriteListAsync<T>(List<T> item)
+        public async Task WriteListAsync<T>(IList<T> item)
         {
             if (item == null)
             {
@@ -738,7 +758,7 @@ namespace LeanIPC
             if (typeof(Exception).IsAssignableFrom(type))
                 return WriteExceptionAsync((Exception)item);
             if (type == typeof(object))
-                return WriteObjectAsync((object)item);
+                return WriteObjectAsync((object)item, type);
             if (type.IsEnum)
                 return WriteAnyAsync(item, Enum.GetUnderlyingType(type));
 
@@ -784,7 +804,7 @@ namespace LeanIPC
                         .Invoke(this, new object[] { item });
 
                 }
-                else if (gt == typeof(List<>))
+                else if (gt == typeof(List<>) || gt == typeof(IList<>))
                 {
                     return
                         (Task)
@@ -793,7 +813,16 @@ namespace LeanIPC
                         .MakeGenericMethod(ga)
                         .Invoke(this, new object[] { item });
                 }
-                else if (gt == typeof(Dictionary<,>))
+                else if (gt == typeof(IEnumerable<>))
+                {
+                    return
+                        (Task)
+                        typeof(BinaryConverterStream)
+                        .GetMethod(nameof(WriteEnumerableAsync), System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public)
+                        .MakeGenericMethod(ga)
+                        .Invoke(this, new object[] { item });
+                }
+                else if (gt == typeof(Dictionary<,>) || gt == typeof(IDictionary<,>))
                 {
                     return
                         (Task)
@@ -806,7 +835,7 @@ namespace LeanIPC
 
             var action = m_serializer.GetAction(type);
             if (action != SerializationAction.Fail)
-                return WriteObjectAsync((object)item);
+                return WriteObjectAsync((object)item, type);
 
             System.Diagnostics.Trace.WriteLine($"Unsupported type: {type.FullName}");
             throw new Exception($"Unsupported type: {type.FullName}");
@@ -1572,7 +1601,7 @@ namespace LeanIPC
                             .Invoke(this, null)
                         );
                 }
-                else if (gt == typeof(List<>))
+                else if (gt == typeof(List<>) || gt == typeof(IList<>) || gt == typeof(IEnumerable<>))
                 {
                     return
                         await
@@ -1584,7 +1613,7 @@ namespace LeanIPC
                             .Invoke(this, null)
                         );
                 }
-                else if (gt == typeof(Dictionary<,>))
+                else if (gt == typeof(Dictionary<,>) || gt == typeof(IDictionary<,>))
                 {
                     return
                         await

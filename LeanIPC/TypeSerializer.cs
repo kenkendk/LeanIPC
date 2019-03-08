@@ -141,7 +141,7 @@ namespace LeanIPC
         };
 
         /// <summary>
-        /// Class for keeping track of letter assingments
+        /// Class for keeping track of letter assignments
         /// </summary>
         private static class Letters
         {
@@ -172,6 +172,16 @@ namespace LeanIPC
             public const char DICTIONARY = 'y';
             public const char TASK = 'j';
             public const char TASKP = 'q';
+
+            public const char ILIST = '-';
+            public const char IENUMERABLE = '^';
+            public const char IDICTIONARY = '%';
+
+            public const char METHOD = 'M';
+            public const char CONSTRUCTOR = 'C';
+            public const char FIELD = 'F';
+            public const char PROPERTY = 'P';
+            public const char INDEXEDPROPERTY = 'I';
         }
 
         /// <summary>
@@ -361,6 +371,9 @@ namespace LeanIPC
             if (type == null)
                 throw new ArgumentNullException(nameof(type));
 
+            if (type.IsInterface && action == SerializationAction.Decompose)
+                throw new Exception($"Cannot pass an interface type, except as a reference: {type}");
+
             lock (m_lock)
             {
                 m_serializationOverrides.Add(type, action);
@@ -512,6 +525,21 @@ namespace LeanIPC
                     lock(m_lock)
                         return m_typeCache[t] = Letters.LIST + "{" + ga + "}";
                 }
+                if (gt == typeof(IList<>))
+                {
+                    lock (m_lock)
+                        return m_typeCache[t] = Letters.ILIST + "{" + ga + "}";
+                }
+                if (gt == typeof(IEnumerable<>))
+                {
+                    lock (m_lock)
+                        return m_typeCache[t] = Letters.IENUMERABLE + "{" + ga + "}";
+                }
+                if (gt == typeof(IDictionary<,>))
+                {
+                    lock (m_lock)
+                        return m_typeCache[t] = Letters.IDICTIONARY + "{" + ga + "}";
+                }
                 else if (gt == typeof(Dictionary<,>))
                 {
                     lock(m_lock)
@@ -593,6 +621,24 @@ namespace LeanIPC
                 lock(m_lock)
                     return m_nameCache[s] = typeof(List<>).MakeGenericType(args);
             }
+            else if (s[0] == Letters.ILIST)
+            {
+                var args = ParseShortTypeDefinition(s.Substring(2, s.Length - 3));
+                lock (m_lock)
+                    return m_nameCache[s] = typeof(IList<>).MakeGenericType(args);
+            }
+            else if (s[0] == Letters.IENUMERABLE)
+            {
+                var args = ParseShortTypeDefinition(s.Substring(2, s.Length - 3));
+                lock (m_lock)
+                    return m_nameCache[s] = typeof(IEnumerable<>).MakeGenericType(args);
+            }
+            else if (s[0] == Letters.IDICTIONARY)
+            {
+                var args = ParseShortTypeDefinition(s.Substring(2, s.Length - 3));
+                lock (m_lock)
+                    return m_nameCache[s] = typeof(IDictionary<,>).MakeGenericType(args);
+            }
             else if (s[0] == Letters.DICTIONARY)
             {
                 var args = ParseShortTypeDefinition(s.Substring(2, s.Length - 3));
@@ -649,21 +695,72 @@ namespace LeanIPC
         /// <param name="s">The string to search.</param>
         /// <param name="offset">The search offset.</param>
         /// <param name="length">The maximum search length.</param>
-        private static int FindEndingBraceIndex(string s, int offset, int length)
+        private static int FindEndingBraceIndex(string s, int offset, int maxindex)
         {
-            while (offset < length)
+            // Not sure if this is faster, but this way we traverse the string only once,
+            // where `IndexOf` requires multiple calls
+            //var bracecount = 0;
+            //while (offset < maxindex)
+            //{
+            //    if (s[offset] == '{')
+            //    {
+            //        bracecount++;
+            //    }
+            //    else if (s[offset] == '}')
+            //    {
+            //        if (bracecount == 0)
+            //            throw new ArgumentException("Unmatched brace");
+
+            //        bracecount--;
+            //    }
+
+            //    if (bracecount == 0)
+            //        return offset;
+
+            //    offset++;
+            //}
+
+            var targets = new char[] { '{', '}' };
+
+            var bracecount = 0;
+            while (offset < maxindex)
             {
-                var end = s.IndexOf('}', offset + 1, length - offset - 1);
-                if (end < 0)
+                var ix = s.IndexOfAny(targets, offset, maxindex - offset);
+                if (ix < 0)
                     throw new ArgumentException("Unmatched brace");
 
-                //Check if there is a newly started brace inside
-                var next = s.IndexOf('{', offset + 1, end - offset - 1);
-                if (next < 0)
-                    return end;
+                if (s[ix] == '{')
+                {
+                    bracecount++;
+                }
+                else if (s[ix] == '}')
+                {
+                    if (bracecount == 0)
+                        throw new ArgumentException("Unmatched brace");
 
-                offset = end;
+                    bracecount--;
+                }
+
+                if (bracecount == 0)
+                    return ix;
+
+                offset = ix + 1;
             }
+
+
+            //while (offset < length)
+            //{
+            //    var end = s.IndexOf('}', offset + 1, maxindex - offset - 1);
+            //    if (end < 0)
+            //        throw new ArgumentException("Unmatched brace");
+
+            //    //Check if there is a newly started brace inside
+            //    var next = s.IndexOf('{', offset + 1, end - offset - 1);
+            //    if (next < 0)
+            //        return end;
+
+            //    offset = end;
+            //}
 
             throw new Exception("Unmatched brace");
         }
@@ -697,6 +794,9 @@ namespace LeanIPC
                     s[ix] == Letters.DICTIONARY ||
                     s[ix] == Letters.GENERIC ||
                     s[ix] == Letters.LIST ||
+                    s[ix] == Letters.ILIST ||
+                    s[ix] == Letters.IENUMERABLE ||
+                    s[ix] == Letters.IDICTIONARY ||
                     s[ix] == Letters.TUPLE ||
                     s[ix] == Letters.TASKP ||
                     s[ix] == Letters.ARRAY;
@@ -738,19 +838,19 @@ namespace LeanIPC
             {
                 var mi = method as System.Reflection.MethodInfo;
                 lock(m_lock)
-                    return m_memberItemCache[method] = "M{" + method.Name + "{" + GetShortTypeName(mi.ReturnType) + "" + GetShortTypeDefinition(mi.GetParameters().Select(x => x.ParameterType).ToArray()) + "}}}";
+                    return m_memberItemCache[method] = Letters.METHOD  +"{" + method.Name + "{" + GetShortTypeName(mi.ReturnType) + "" + GetShortTypeDefinition(mi.GetParameters().Select(x => x.ParameterType).ToArray()) + "}}}";
             }
             if (method is System.Reflection.ConstructorInfo)
             {
                 var ci = method as System.Reflection.ConstructorInfo;
                 lock(m_lock)
-                    return m_memberItemCache[method] = "C{" + method.Name + "{" + GetShortTypeDefinition(ci.GetParameters().Select(x => x.ParameterType).ToArray()) + "}}";
+                    return m_memberItemCache[method] = Letters.CONSTRUCTOR + "{" + method.Name + "{" + GetShortTypeDefinition(ci.GetParameters().Select(x => x.ParameterType).ToArray()) + "}}";
             }
             else if (method is System.Reflection.FieldInfo)
             {
                 var fi = method as System.Reflection.FieldInfo;
                 lock(m_lock)
-                    return m_memberItemCache[method] = "F{" + method.Name + "{" + GetShortTypeName(fi.FieldType) + "}}";
+                    return m_memberItemCache[method] = Letters.FIELD + "{" + method.Name + "{" + GetShortTypeName(fi.FieldType) + "}}";
             }
             else if (method is System.Reflection.PropertyInfo)
             {
@@ -759,12 +859,12 @@ namespace LeanIPC
                 if (ixp.Length > 0)
                 {
                     lock(m_lock)
-                        return m_memberItemCache[method] = "I{" + pi.Name + "{" + GetShortTypeName(pi.PropertyType) + "" + GetShortTypeDefinition(ixp.Select(x => x.ParameterType).ToArray()) + "}}";
+                        return m_memberItemCache[method] = Letters.INDEXEDPROPERTY + "{" + pi.Name + "{" + GetShortTypeName(pi.PropertyType) + "" + GetShortTypeDefinition(ixp.Select(x => x.ParameterType).ToArray()) + "}}";
                 }
                 else
                 {
                     lock(m_lock)
-                        return m_memberItemCache[method] = "P{" + pi.Name + "{" + GetShortTypeName(pi.PropertyType) + "}}";
+                        return m_memberItemCache[method] = Letters.PROPERTY + "{" + pi.Name + "{" + GetShortTypeName(pi.PropertyType) + "}}";
                 }
             }
 
@@ -793,7 +893,7 @@ namespace LeanIPC
             var eb = FindEndingBraceIndex(s, nix, s.Length);
             var typeargs = ParseShortTypeDefinition(s.Substring(nix + 1, eb - nix - 1));
 
-            if (s[0] == 'M')
+            if (s[0] == Letters.METHOD)
             {
                 var tmp = source.GetMethod(name, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Static, null, typeargs.Skip(1).ToArray(), null);
                 if (tmp == null)
@@ -801,7 +901,7 @@ namespace LeanIPC
                 lock(m_lock)
                     return m_memberStringCache[key] = tmp;
             }
-            else if (s[0] == 'C')
+            else if (s[0] == Letters.CONSTRUCTOR)
             {
                 var tmp = source.GetConstructor(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance, null, typeargs, null);
                 if (tmp == null)
@@ -809,7 +909,7 @@ namespace LeanIPC
                 lock(m_lock)
                     return m_memberStringCache[key] = tmp;
             }
-            else if (s[0] == 'I')
+            else if (s[0] == Letters.INDEXEDPROPERTY)
             {
                 var tmp = source.GetProperty(name, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Static, null, typeargs[0], typeargs.Skip(1).ToArray(), null);
                 if (tmp == null)
@@ -817,7 +917,7 @@ namespace LeanIPC
                 lock(m_lock)
                     return m_memberStringCache[key] = tmp;
             }
-            else if (s[0] == 'P')
+            else if (s[0] == Letters.PROPERTY)
             {
                 var tmp = source.GetProperty(name, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Static, null, typeargs[0], new Type[0], null);
                 if (tmp == null)
@@ -825,7 +925,7 @@ namespace LeanIPC
                 lock (m_lock)
                     return m_memberStringCache[key] = tmp;
             }
-            else if (s[0] == 'F')
+            else if (s[0] == Letters.FIELD)
             {
                 var tmp = source.GetField(name, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Static);
                 if (tmp == null)
@@ -845,6 +945,72 @@ namespace LeanIPC
         private static bool IsSimpleStruct(Type it)
         {
             return it.IsValueType && (it.IsLayoutSequential || it.IsExplicitLayout);
+        }
+
+
+        /// <summary>
+        /// Gets the element type for an enumerable
+        /// </summary>
+        /// <returns>The enumerable type, or null if the type is not enumerable.</returns>
+        /// <param name="it">The type to get the element type from.</param>
+        public static Type EnumerableElementType(Type it)
+        {
+            // Grab the enumerable type if possible
+            var entype = it.IsArray
+                ? it.GetElementType()
+                : it.GetInterfaces()
+                    .Concat(new Type[] { it })
+                    .Where(x => x.IsGenericType && x.GetGenericTypeDefinition() == typeof(IEnumerable<>))
+                    .Select(x => x.GetGenericArguments().First())
+                    .FirstOrDefault();
+
+            return entype;
+        }
+
+        /// <summary>
+        /// Returns a value indicating if the type represents a sequence of values
+        /// </summary>
+        /// <returns><c>true</c>, if type is a sequence, <c>false</c> otherwise.</returns>
+        /// <param name="it">The type to test.</param>
+        public static bool IsSequenceSerializationPrimitive(Type it)
+        {
+            if (it.IsGenericType)
+            {
+                var gt = it.GetGenericTypeDefinition();
+                return
+                    gt == typeof(List<>) ||
+                    gt == typeof(IList<>) ||
+                    gt == typeof(IEnumerable<>) ||
+                    gt == typeof(Dictionary<,>) ||
+                    gt == typeof(IDictionary<,>);
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Returns a value indicating if the type represents multiple primitive values
+        /// </summary>
+        /// <returns><c>true</c>, if the type is a composite, <c>false</c> otherwise.</returns>
+        /// <param name="it">The type to test.</param>
+        public static bool IsCompositeSerializationPrimitive(Type it)
+        {
+            if (it.IsGenericType)
+            {
+                var gt = it.GetGenericTypeDefinition();
+                return
+                    gt == typeof(KeyValuePair<,>) ||
+                    gt == typeof(Tuple<>) ||
+                    gt == typeof(Tuple<,>) ||
+                    gt == typeof(Tuple<,,>) ||
+                    gt == typeof(Tuple<,,,>) ||
+                    gt == typeof(Tuple<,,,,>) ||
+                    gt == typeof(Tuple<,,,,,>) ||
+                    gt == typeof(Tuple<,,,,,,>) ||
+                    gt == typeof(Tuple<,,,,,,,>);
+            }
+
+            return false;
         }
 
         /// <summary>
@@ -874,7 +1040,10 @@ namespace LeanIPC
                     gt == typeof(Tuple<,,,,,,>) ||
                     gt == typeof(Tuple<,,,,,,,>) ||
                     gt == typeof(List<>) ||
-                    gt == typeof(Dictionary<,>))
+                    gt == typeof(IList<>) ||
+                    gt == typeof(IEnumerable<>) ||
+                    gt == typeof(Dictionary<,>) ||
+                    gt == typeof(IDictionary<,>))
                 {
                     return true;
                 }
@@ -923,11 +1092,15 @@ namespace LeanIPC
                             gt == typeof(Tuple<,,,,,,>) ||
                             gt == typeof(Tuple<,,,,,,,>) ||
                             gt == typeof(List<>) ||
+                            gt == typeof(IList<>) ||
+                            gt == typeof(IEnumerable<>) ||
+                            gt == typeof(IDictionary<,>) ||
                             gt == typeof(Dictionary<,>))
                         {
                             return SerializationAction.Decompose;
                         }
                     }
+
 
                     if (type.IsValueType)
                         action = SerializationAction.Decompose;
@@ -940,49 +1113,184 @@ namespace LeanIPC
         }
 
         /// <summary>
+        /// Visits all values recursively by looking at the fields of the type.
+        /// </summary>
+        /// <param name="root">The root element to visit.</param>
+        /// <param name="treatAs">The type to treat the element as.</param>
+        public IEnumerable<Tuple<object, Type, SerializationAction>> VisitValues(object root, Type treatAs)
+        {
+            if (root != null)
+            {
+                var work = new Queue<Tuple<object, Type>>();
+                work.Enqueue(new Tuple<object, Type>(root, treatAs));
+
+                while (work.Count > 0)
+                {
+                    var cur = work.Dequeue();
+                    if (cur.Item1 == null)
+                        continue;
+
+                    var it = cur.Item1.GetType();
+
+                    // If we have custom handling, use that
+                    Func<Type, object, Tuple<Type[], object[]>> serializer;
+                    lock (m_lock)
+                        m_customSerializer.TryGetValue(it, out serializer);
+
+                    if (serializer != null && !PRIMITIVE_TYPES.Contains(it))
+                    {
+                        yield return new Tuple<object, Type, SerializationAction>(cur.Item1, cur.Item2, SerializationAction.Default);
+                        var n = serializer(cur.Item2, cur.Item1);
+                        for (var i = 0; i < n.Item1.Length; i++)
+                            work.Enqueue(new Tuple<object, Type>(n.Item2[i], n.Item1[i]));
+                    }
+                    else
+                    {
+                        // Get custom handling, if any
+                        var action = GetAction(it);
+                        var workit = it;
+                        if (action == SerializationAction.Fail)
+                        {
+                            var treatAsAction = GetAction(cur.Item2);
+                            if (treatAsAction != SerializationAction.Fail)
+                            {
+                                action = treatAsAction;
+                                workit = cur.Item2;
+
+                                lock (m_lock)
+                                    m_customSerializer.TryGetValue(workit, out serializer);
+
+                                if (serializer != null && !PRIMITIVE_TYPES.Contains(workit))
+                                {
+                                    yield return new Tuple<object, Type, SerializationAction>(cur.Item1, workit, SerializationAction.Default);
+                                    var n = serializer(workit, cur.Item1);
+                                    for (var i = 0; i < n.Item1.Length; i++)
+                                        work.Enqueue(new Tuple<object, Type>(n.Item2[i], n.Item1[i]));
+
+                                    continue;
+                                }
+                            }
+                        }
+
+                        // Verify that we can reconstruct the value
+                        if (it.IsByRef && it.GetConstructor(Type.EmptyTypes) == null && action == SerializationAction.Decompose)
+                            action = SerializationAction.Fail;
+                            
+                        var isPrimitive = IsSerializationPrimitive(workit);
+                        if (!isPrimitive && workit.IsInterface && action != SerializationAction.Reference)
+                            action = SerializationAction.Fail;
+
+                        yield return new Tuple<object, Type, SerializationAction>(cur.Item1, cur.Item2, action);
+
+                        if (action == SerializationAction.Ignore || action == SerializationAction.Fail)
+                            continue;
+
+                        var isComposite = IsCompositeSerializationPrimitive(workit);
+                        var isSequence = IsSequenceSerializationPrimitive(workit);
+
+                        if (action == SerializationAction.Decompose)
+                        {
+                            if (isSequence)
+                            {
+                                var e = cur.Item1 as System.Collections.IEnumerable;
+                                // Grab the enumerable type if possible
+                                var entype = EnumerableElementType(workit);
+
+                                foreach (var n in e)
+                                    work.Enqueue(new Tuple<object, Type>(n, entype ?? n?.GetType()));
+                            }
+                            else if (isComposite)
+                            {
+                                var fields = it
+                                    .GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)
+                                    .Where(x => GetAction(x.FieldType) != SerializationAction.Ignore)
+                                    .ToArray();
+
+                                Func<System.Reflection.FieldInfo[], System.Reflection.FieldInfo[]> fieldfilter;
+                                lock (m_lock)
+                                    m_serializationFilters.TryGetValue(it, out fieldfilter);
+
+                                if (fieldfilter != null)
+                                    fields = fieldfilter(fields);
+
+                                for (var i = 0; i < fields.Length; i++)
+                                    work.Enqueue(new Tuple<object, Type>(fields[i].GetValue(cur.Item1), fields[i].FieldType));
+                            }
+
+                        }
+                    }
+                }
+            }
+        }
+
+        /// <summary>
         /// Breaks an object into its individual fields, and returns the types and values for that entry
         /// </summary>
         /// <returns>The dismantled components.</returns>
         /// <param name="item">The struct to disassemble.</param>
-        public Tuple<Type[], object[]> SerializeObject(object item)
+        /// <param name="treatAs">The type to treat the item as</param>
+        public Tuple<Type, Type[], object[]> SerializeObject(object item, Type treatAs)
         {
             if (item == null)
                 throw new ArgumentNullException(nameof(item));
 
             var it = item.GetType();
+            var workit = it;
 
             // If we have custom handling, use that
             Func<Type, object, Tuple<Type[], object[]>> serializer;
             lock (m_lock)
                 m_customSerializer.TryGetValue(it, out serializer);
-            
+
             if (serializer != null && !PRIMITIVE_TYPES.Contains(it))
-                return serializer(it, item);
+            {
+                var t = serializer(it, item);
+                return new Tuple<Type, Type[], object[]>(it, t.Item1, t.Item2);
+            }
 
             // Get custom handling, if any
             var action = GetAction(it);
             if (action == SerializationAction.Fail)
-                throw new ArgumentException($"The type {it} is not supported for serialization");
+            {
+                var treatAsAction = GetAction(treatAs);
+                if (treatAsAction != SerializationAction.Fail)
+                {
+                    action = treatAsAction;
+                    workit = treatAs;
+
+                    lock (m_lock)
+                        m_customSerializer.TryGetValue(workit, out serializer);
+
+                    if (serializer != null && !PRIMITIVE_TYPES.Contains(workit))
+                    {
+                        var t = serializer(workit, item);
+                        return new Tuple<Type, Type[], object[]>(workit, t.Item1, t.Item2);
+                    }
+                }
+            }
+
+            if (action == SerializationAction.Fail)
+                throw new ArgumentException($"The type {workit} is not supported for serialization");
             if (action == SerializationAction.Reference)
-                throw new ArgumentException($"The type {it} should be passed by reference, not serialized");
+                throw new ArgumentException($"The type {workit} should be passed by reference, not serialized");
 
             // Don't bother with primitives
-            if (IsSerializationPrimitive(it))
-                return new Tuple<Type[], object[]>(new Type[] { it }, new object[] { item });
+            if (IsSerializationPrimitive(workit))
+                return new Tuple<Type, Type[], object[]>(workit, new Type[] { workit }, new object[] { item });
 
-            if ((it.IsByRef || it.IsArray) && it.GetConstructor(Type.EmptyTypes) == null && action == SerializationAction.Decompose)
-                throw new ArgumentException($"The type {it} does not have a default constructor");
+            //if ((workit.IsByRef || workit.IsArray) && it.GetConstructor(Type.EmptyTypes) == null && action == SerializationAction.Decompose)
+                //throw new ArgumentException($"The type {workit} does not have a default constructor");
 
-            var isSimple = IsSimpleStruct(it);
+            var isSimple = IsSimpleStruct(workit);
 
-            var fields = it
+            var fields = workit
                 .GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)
                 .Where(x => GetAction(x.FieldType) != SerializationAction.Ignore)
                 .ToArray();
 
             Func<System.Reflection.FieldInfo[], System.Reflection.FieldInfo[]> fieldfilter;
             lock (m_lock)
-                m_serializationFilters.TryGetValue(it, out fieldfilter);
+                m_serializationFilters.TryGetValue(workit, out fieldfilter);
 
             if (fieldfilter != null)
                 fields = fieldfilter(fields);
@@ -1004,7 +1312,7 @@ namespace LeanIPC
                 vres[i + offset] = fields[i].GetValue(item);
             }
 
-            return new Tuple<Type[], object[]>(tres, vres);
+            return new Tuple<Type, Type[], object[]>(workit, tres, vres);
         }
 
         /// <summary>

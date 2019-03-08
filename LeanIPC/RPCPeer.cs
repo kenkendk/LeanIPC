@@ -1,6 +1,8 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Threading.Tasks;
 
 namespace LeanIPC
@@ -28,7 +30,7 @@ namespace LeanIPC
         /// <summary>
         /// The allowed remote invocation types
         /// </summary>
-        protected readonly List<Type> m_allowedTypes = new List<Type>();
+        protected readonly Dictionary<Type, Func<System.Reflection.MemberInfo, object[], bool>> m_allowedTypes = new Dictionary<Type, Func<System.Reflection.MemberInfo, object[], bool>>();
 
         /// <summary>
         /// The lock guarding the <see cref="m_remoteProxies"/> list
@@ -46,9 +48,10 @@ namespace LeanIPC
         private readonly Dictionary<Type, Type> m_automaticProxies = new Dictionary<Type, Type>();
 
         /// <summary>
-        /// The method used to filter which members can be remotely accessed
+        /// A global filter that is invoked before the type specific filters.
+        /// If this is <c>null</c>, only type specific filters can allow method or property access.
         /// </summary>
-        private Func<System.Reflection.MemberInfo, object[], bool> m_filterFunction;
+        public Func<System.Reflection.MemberInfo, object[], bool> GlobalFilter { get; set; }
 
         /// <summary>
         /// Gets the type serializer used for this instance.
@@ -62,6 +65,37 @@ namespace LeanIPC
         public RemoteObjectHandler RemoteHandler => m_remoteObjects;
 
         /// <summary>
+        /// The inter-process connection instance
+        /// </summary>
+        public InterProcessConnection IPC => m_connection;
+
+        /// <summary>
+        /// The main task, assigned when starting the peer
+        /// </summary>
+        public Task MainTask { get; private set; }
+
+        /// <summary>
+        /// Initializes a new instance of the <see cref="T:LeanIPC.RPCPeer"/> class.
+        /// </summary>
+        /// <param name="stream">The communication stream.</param>
+        /// <param name="allowedTypes">The types on which remote execution is allowed</param>
+        public RPCPeer(Stream stream, Type[] allowedTypes = null, Func<System.Reflection.MemberInfo, object[], bool> filterPredicate = null)
+            : this(new InterProcessConnection(stream, stream), allowedTypes, null)
+        {
+        }
+
+        /// <summary>
+        /// Initializes a new instance of the <see cref="T:LeanIPC.RPCPeer"/> class.
+        /// </summary>
+        /// <param name="reader">The reader stream.</param>
+        /// <param name="writer">The writer stream.</param>
+        /// <param name="allowedTypes">The types on which remote execution is allowed</param>
+        public RPCPeer(Stream reader, Stream writer, Type[] allowedTypes = null, Func<System.Reflection.MemberInfo, object[], bool> filterPredicate = null)
+            : this(new InterProcessConnection(reader, writer), allowedTypes, null)
+        {
+        }
+
+        /// <summary>
         /// Initializes a new instance of the <see cref="T:LeanIPC.RPCPeer"/> class.
         /// </summary>
         /// <param name="connection">The connection to use for invoking methods.</param>
@@ -71,11 +105,14 @@ namespace LeanIPC
         {
             m_connection = connection ?? throw new ArgumentNullException(nameof(connection));
             m_connection.AddMessageHandler(HandleMessage);
-            m_allowedTypes.AddRange((allowedTypes ?? new Type[0]).Where(x => x != null));
-            if (m_allowedTypes.Count != 0 && m_filterFunction == null)
-                filterPredicate = (a, b) => true;
+            if (allowedTypes != null)
+            {
+                if (allowedTypes.Length != 0 && filterPredicate == null)
+                    filterPredicate = (a, b) => true;
 
-            m_filterFunction = filterPredicate;
+                foreach (var at in allowedTypes)
+                    m_allowedTypes.Add(at, filterPredicate);
+            }
 
             m_typeSerializer = m_connection.TypeSerializer ?? throw new ArgumentNullException(nameof(m_connection.TypeSerializer));
             m_remoteObjects = m_connection.RemoteHandler ?? throw new ArgumentNullException(nameof(m_connection.RemoteHandler));
@@ -99,6 +136,21 @@ namespace LeanIPC
         public RPCPeer(InterProcessConnection connection, params Type[] allowedTypes)
             : this(connection, allowedTypes, null)
         {
+        }
+
+        /// <summary>
+        /// Starts the connection after configuration has completed
+        /// </summary>
+        /// <param name="asclient">If set to <c>true</c>, connect as a client.</param>
+        /// <param name="authenticationHandler">The optional authentication handler.</param>
+        public virtual RPCPeer Start(bool asclient, IAuthenticationHandler authenticationHandler = null)
+        {
+            if (MainTask != null)
+                throw new InvalidOperationException("Cannot start a RPC peer more than once");
+
+            MainTask = m_connection.RunMainLoopAsync(asclient, authenticationHandler);
+            m_connection.WaitForHandshakeAsync().Wait();
+            return this;
         }
 
         /// <summary>
@@ -134,6 +186,31 @@ namespace LeanIPC
         {
             lock (m_lock)
                 return m_automaticProxies.Remove(remotetype);
+        }
+
+        /// <summary>
+        /// Adds an allowed type tp the list of allowed types
+        /// </summary>
+        /// <param name="localtype">The type to allow calls for.</param>
+        /// <param name="filter">The optional filter used to limit access to the methods and properties in the type</param>
+        public void AddAllowedType(Type localtype, Func<System.Reflection.MemberInfo, object[], bool> filter = null)
+        {
+            if (filter == null)
+                filter = (a, b) => true;
+
+            lock (m_lock)
+                m_allowedTypes.Add(localtype, filter);
+        }
+
+        /// <summary>
+        /// Removes an allowed type
+        /// </summary>
+        /// <returns><c>true</c>, if allowed type was removed, <c>false</c> otherwise.</returns>
+        /// <param name="localtype">The local type to use.</param>
+        public bool RemoveAllowedType(Type localtype)
+        {
+            lock (m_lock)
+                return m_allowedTypes.Remove(localtype);
         }
 
         /// <summary>
@@ -205,9 +282,30 @@ namespace LeanIPC
                 throw new ArgumentOutOfRangeException(nameof(types), $"The length of  {nameof(types)} must be the same as the length of {nameof(arguments)}");
 
             // Register each local reference item with the remote
-            foreach (var arg in arguments)
-                if (arg != null && (m_typeSerializer.GetAction(arg.GetType()) == SerializationAction.Reference || m_remoteObjects.IsLocalObject(arg)))
+            for (var i = 0; i < arguments.Length; i++)
+            {
+                var arg = arguments[i];
+                if (arg == null)
+                    continue;
+
+                var tp = arg.GetType();
+
+                var action = m_typeSerializer.GetAction(tp);
+                if (action == SerializationAction.Fail)
+                {
+                    var ta = m_typeSerializer.GetAction(types[i]);
+                    if (ta != SerializationAction.Fail)
+                    {
+                        action = ta;
+                        tp = types[i];
+                    }
+                }
+
+                if (action == SerializationAction.Reference || m_remoteObjects.IsLocalObject(arg))
                     await RegisterLocalObjectOnRemote(arg);
+                else if (action == SerializationAction.Fail)
+                    throw new Exception($"Cannot pass item with type {arg.GetType()} ({types[i]})");
+            }
 
             var res = await m_connection.SendAndWaitAsync(
                 Command.InvokeRemoteMethod,
@@ -235,7 +333,7 @@ namespace LeanIPC
         /// <param name="arguments">The values given to the method when invoked.</param>
         /// <param name="isWrite">If set to <c>true</c> this is a write field or property request.</param>
         /// <typeparam name="T">The return type</typeparam>
-        public async Task<T> InvokeRemoteMethodAsync<T>(long handle, System.Reflection.MemberInfo method, object[] arguments, bool isWrite)
+        public async Task<T> HandleInvokeMethodAsync<T>(long handle, System.Reflection.MemberInfo method, object[] arguments, bool isWrite)
         {
             return (T)await InvokeRemoteMethodAsync(handle, method, arguments, isWrite);
         }
@@ -454,12 +552,31 @@ namespace LeanIPC
                     }
                 }
 
-                // If we are sending an object back, register a local reference to it
-                if (res != null && m_typeSerializer.GetAction(res.GetType()) == SerializationAction.Reference)
+                var resAction = res == null ? SerializationAction.Default : m_typeSerializer.GetAction(res.GetType());
+
+                // If we return a value that could be passed by reference, we pass it as that,
+                // even tough the actual type is different
+                if (res != null && resAction == SerializationAction.Fail)
                 {
-                    if (await m_remoteObjects.RegisterLocalObjectAsync(res))
-                        await m_connection.SendPassthroughAsync(Command.RegisterRemoteObject, new RegisterRemoteObjectRequest(res.GetType(), m_remoteObjects.GetLocalHandle(res)));
+                    var resTypeAction = m_typeSerializer.GetAction(resType);
+                    if (resTypeAction == SerializationAction.Reference)
+                        resAction = resTypeAction;
                 }
+
+                // We need to explore the result to ensure that we find all reference objects that we need to send
+                // This also ensures that we get any errors *before* attempting to send, which
+                // gives much nicer error messages
+
+                var items = m_typeSerializer.VisitValues(res, resType).ToList();
+                var fails = items.FirstOrDefault(x => x.Item3 == SerializationAction.Fail);
+
+                if (fails != null)
+                    throw new ArgumentException($"Not configured to transmit an instance of type {fails.Item1.GetType()}{(fails.Item1.GetType() == fails.Item2 ? "" : $" as ({fails.Item2})")}");
+
+                // If we are sending an object back, register a local reference to it
+                foreach (var el in items.Where(x => x.Item3 == SerializationAction.Reference))
+                    if (await m_remoteObjects.RegisterLocalObjectAsync(el.Item1))
+                        await m_connection.SendPassthroughAsync(Command.RegisterRemoteObject, new RegisterRemoteObjectRequest(el.Item2, m_remoteObjects.GetLocalHandle(el.Item1)));
 
                 hasResponded = true;
                 await m_connection.SendResponseAsync(requestId, Command.InvokeRemoteMethod, new InvokeRemoteMethodResponse(resType, res));
@@ -469,11 +586,9 @@ namespace LeanIPC
                 if (hasResponded)
                     throw;
 
-                Console.WriteLine("Error on invoke: {0}", ex);
-
                 // Unwrap this to get a better error message to pass on
                 var x = ex;
-                if (x != null && x is System.Reflection.TargetInvocationException)
+                while (x != null && x is System.Reflection.TargetInvocationException)
                     x = ((System.Reflection.TargetInvocationException)x).InnerException;
 
                 await m_connection.SendErrorResponseAsync(requestId, Command.InvokeRemoteMethod, x ?? ex);
@@ -488,10 +603,11 @@ namespace LeanIPC
         /// <param name="targetType">The type to evaluate.</param>
         protected virtual bool IsTypeAllowed(Type targetType)
         {
+            if (GlobalFilter != null)
+                return true;
+
             // If there is a filter but no types, allow the filter to decide
-            return m_allowedTypes.Count == 0 
-                ? m_filterFunction != null
-                : m_allowedTypes.Contains(targetType);
+            return m_allowedTypes.ContainsKey(targetType);
         }
 
         /// <summary>
@@ -502,10 +618,11 @@ namespace LeanIPC
         /// <param name="arguments">The arguments to the method.</param>
         protected virtual bool IsMethodAllowed(System.Reflection.MemberInfo method, object[] arguments)
         {
-            if (m_filterFunction == null)
+            if (GlobalFilter != null && !GlobalFilter(method, arguments))
                 return false;
-            
-            return m_filterFunction(method, arguments);
+
+            m_allowedTypes.TryGetValue(method.DeclaringType, out var f);
+            return f != null && f(method, arguments);
         }
 
         /// <summary>
@@ -563,6 +680,15 @@ namespace LeanIPC
         }
 
         /// <summary>
+        /// Disposes the instance
+        /// </summary>
+        /// <param name="isDisposing">If set to <c>true</c>, the call is from <see cref="Dispose()"/>.</param>
+        protected virtual void Dispose(bool isDisposing)
+        {
+            m_connection?.Dispose();
+        }
+
+        /// <summary>
         /// Releases all resource used by the <see cref="T:LeanIPC.RPCClient"/> object.
         /// </summary>
         /// <remarks>Call <see cref="Dispose"/> when you are finished using the <see cref="T:LeanIPC.RPCClient"/>. The
@@ -571,7 +697,288 @@ namespace LeanIPC
         /// the garbage collector can reclaim the memory that the <see cref="T:LeanIPC.RPCClient"/> was occupying.</remarks>
         public void Dispose()
         {
-            m_connection?.Dispose();
+            Dispose(true);
+        }
+
+        /// <summary>
+        /// Registers a method for deserializing an item
+        /// </summary>
+        /// <returns>The custom deserializer.</returns>
+        /// <param name="method">The method that deserializes.</param>
+        /// <typeparam name="T">The type to return parameter.</typeparam>
+        public RPCPeer RegisterCustomDeserializer<T>(Func<object[], T> method)
+        {
+            TypeSerializer.RegisterCustomSerializer(
+                typeof(T),
+                (a, b) => throw new InvalidOperationException("Serialization not supported"),
+                (a, b) => method(b)
+            );
+
+            return this;
+        }
+
+        /// <summary>
+        /// Registers a method for deserializing an item
+        /// </summary>
+        /// <returns>The custom deserializer.</returns>
+        /// <param name="serializer">The method that serializes.</param>
+        /// <param name="deserializer">The optional method that deserializes</param>
+        /// <typeparam name="T">The type to register.</typeparam>
+        public RPCPeer RegisterCustomSerializer<T>(Func<object, Tuple<Type[], object[]>> serializer, Func<object[], T> deserializer = null)
+        {
+            TypeSerializer.RegisterCustomSerializer(
+                typeof(T),
+                (a, b) => serializer(b),
+                (a, b) => deserializer == null ? throw new InvalidOperationException("Deserialization not supported") : deserializer(b)
+            );
+
+            return this;
+        }
+
+        /// <summary>
+        /// Stops the server or client
+        /// </summary>
+        /// <returns>An awaitable task indicating that the server has stopped.</returns>
+        public virtual Task StopAsync()
+        {
+            return Task.WhenAll(
+                m_connection.ShutdownAsync(),
+                MainTask
+            );
+        }
+
+        /// <summary>
+        /// Invokes a remote static method
+        /// </summary>
+        /// <returns>The return value from the remote method.</returns>
+        /// <param name="method">The method to call.</param>
+        /// <param name="args">The arguments passed to the method.</param>
+        /// <typeparam name="T">The return type parameter.</typeparam>
+        public Task<T> CallRemoteStaticMethod<T>(MethodInfo method, params object[] args)
+        {
+            return HandleInvokeMethodAsync<T>(0, method, args, false);
+        }
+
+        /// <summary>
+        /// Invokes a remote static method
+        /// </summary>
+        /// <returns>The return value from the remote method.</returns>
+        /// <param name="method">The method to call.</param>
+        /// <param name="args">The arguments passed to the method.</param>
+        /// <typeparam name="T">The return type parameter.</typeparam>
+        public Task CallRemoteStaticMethod(MethodInfo method, params object[] args)
+        {
+            return InvokeRemoteMethodAsync(0, method, args, false);
+        }
+
+        /// <summary>
+        /// Creates a new remote instance, requires that a proxy generator is present on the peer
+        /// </summary>
+        /// <returns>The create.</returns>
+        /// <param name="type">The type of the remote object to create.</param>
+        /// <param name="arguments">The arguments to the constructor.</param>
+        /// <typeparam name="T">The return type</typeparam>
+        public async Task<T> CreateAsync<T>(Type type, params object[] arguments)
+        {
+            if (!typeof(T).IsInterface)
+                throw new Exception($"Return type {typeof(T)} is not an interface");
+
+            var res = await CreateRemoteInstanceAsync(type, arguments);
+            return (T)res;
+        }
+
+        /// <summary>
+        /// Creates a new remote instance
+        /// </summary>
+        /// <returns>The create.</returns>
+        /// <param name="type">The type of the remote object to create.</param>
+        /// <param name="arguments">The arguments to the constructor.</param>
+        public Task<IRemoteInstance> CreateRemoteInstanceAsync(Type type, params object[] arguments)
+        {
+            if (type == null)
+                throw new ArgumentNullException(nameof(type));
+
+            arguments = arguments ?? new object[0];
+            var argtypes = arguments.Select(x => x?.GetType()).ToArray();
+
+            // Get a list of suitable constructors, given the parameters we have
+            var constructors = type
+                .GetConstructors()
+                .Where(x => x.GetParameters().Length == arguments.Length)
+                .Where(c =>
+                    c.GetParameters()
+                        .Zip(
+                            argtypes,
+                            (p, a) => new { p = p.ParameterType, a }
+                        )
+                        .All(x =>
+                            (x.a == null && x.p.IsByRef)
+                            ||
+                            (x.a != null && x.p.IsAssignableFrom(x.a))
+                        )
+                ).ToArray();
+
+            if (constructors.Length == 0)
+                throw new ArgumentException($"No constructor on type {type} matches the given types: ({string.Join(",", argtypes.Select(x => x.Name))})");
+            if (constructors.Length != 1)
+                throw new ArgumentException($"Found multiple constructors on {type} match the given types: {Environment.NewLine}({string.Join(Environment.NewLine, constructors.Select(n => string.Join(",", n.GetParameters().Select(x => x.ParameterType.Name))))}");
+
+            return CreateRemoteInstanceAsync(constructors.First(), arguments);
+        }
+
+        /// <summary>
+        /// Creates a new remote proxy
+        /// </summary>
+        /// <returns>The remote instance.</returns>
+        /// <param name="constructor">The constructor to use.</param>
+        /// <param name="arguments">The arguments to the constructor.</param>
+        public async Task<IRemoteInstance> CreateRemoteInstanceAsync(ConstructorInfo constructor, params object[] arguments)
+        {
+            return (IRemoteInstance)await InvokeRemoteMethodAsync(0, constructor, arguments, false);
+        }
+
+        /// <summary>
+        /// Creates a remote instance
+        /// </summary>
+        /// <returns>The remote instance to create.</returns>
+        /// <param name="targettype">The remote type to create</param>
+        /// <param name="args">The constructor arguments.</param>
+        /// <typeparam name="T">The interface for the remote type.</typeparam>
+        public Task<T> CreateRemoteInstanceAsync<T>(Type targettype, params object[] args)
+        {
+            return this.CreateAsync<T>(targettype, args);
+        }
+
+        /// <summary>
+        /// Registers a type as being decomposed, i.e. all fields are sent
+        /// </summary>
+        /// <returns>The RPC peer reference type.</returns>
+        /// <typeparam name="T">The type to register.</typeparam>
+        public RPCPeer RegisterCompositeType<T>()
+        {
+            return RegisterCompositeType(typeof(T));
+        }
+
+        /// <summary>
+        /// Registers a type as being decomposed, i.e. all fields are sent
+        /// </summary>
+        /// <returns>The RPC peer reference type.</returns>
+        /// <param name="t">The type to register</param>
+        public RPCPeer RegisterCompositeType(Type t)
+        {
+            return RegisterByValType(t);
+        }
+
+        /// <summary>
+        /// Registers a type as being locally served, i.e. can be remotely called
+        /// </summary>
+        /// <returns>The RPC peer reference type.</returns>
+        /// <param name="filter">An optional filter; if <c>null</c> all methods and properties on the object are remote callable.</param>
+        /// <typeparam name="T">The type to serve locally.</typeparam>
+        public RPCPeer RegisterLocallyServedType<T>(Func<MemberInfo, object[], bool> filter = null)
+        {
+            return RegisterLocallyServedType(typeof(T), filter);
+        }
+
+        /// <summary>
+        /// Registers a type as being locally served, i.e. can be remotely called
+        /// </summary>
+        /// <returns>The RPC peer reference type.</returns>
+        /// <param name="t">The type to register</param>
+        /// <param name="filter">An optional filter; if <c>null</c> all methods and properties on the object are remote callable.</param>
+        /// <typeparam name="T">The type to serve locally.</typeparam>
+        public RPCPeer RegisterLocallyServedType(Type t, Func<MemberInfo, object[], bool> filter = null)
+        {
+            AddAllowedType(t, filter);
+            return RegisterByRefType(t);
+        }
+
+
+        /// <summary>
+        /// Registers an automatically generated proxy for the given type
+        /// </summary>
+        /// <returns>The RPC peer reference type.</returns>
+        /// <typeparam name="TRemoteType">The remote type ro accept.</typeparam>
+        /// <typeparam name="TLocalType">The local proxy type to use.</typeparam>
+        public RPCPeer RegisterLocalProxyForRemote<TRemoteType, TLocalType>()
+        {
+            AddAutomaticProxy(typeof(TRemoteType), typeof(TLocalType));
+            return this;
+        }
+
+        /// <summary>
+        /// Register a type as being passed by reference
+        /// </summary>
+        /// <returns>The RPC peer reference type.</returns>
+        /// <typeparam name="T">The type to register as a reference type.</typeparam>
+        public RPCPeer RegisterByRefType<T>()
+        {
+            return RegisterByRefType(typeof(T));
+        }
+
+        /// <summary>
+        /// Register a type as being passed by reference
+        /// </summary>
+        /// <returns>The RPC peer reference type.</returns>
+        /// <typeparam name="T">The type to register as a reference type.</typeparam>
+        public RPCPeer RegisterByRefType(Type t)
+        {
+            TypeSerializer.RegisterSerializationAction(t, SerializationAction.Reference);
+            return this;
+        }
+
+        /// <summary>
+        /// Register a type as being passed by value
+        /// </summary>
+        /// <returns>The RPC peer reference type.</returns>
+        /// <typeparam name="T">The type to register as a value type.</typeparam>
+        public RPCPeer RegisterByValType(Type t)
+        {
+            TypeSerializer.RegisterSerializationAction(t, SerializationAction.Decompose);
+            return this;
+        }
+
+        /// <summary>
+        /// Register a type as being passed by value
+        /// </summary>
+        /// <returns>The RPC peer reference type.</returns>
+        /// <typeparam name="T">The type to register as a value type.</typeparam>
+        public RPCPeer RegisterByValType<T>()
+        {
+            return RegisterByValType(typeof(T));
+        }
+
+        /// <summary>
+        /// Register a type as being ignroe
+        /// </summary>
+        /// <returns>The RPC peer reference type.</returns>
+        /// <typeparam name="T">The type to register as ignored.</typeparam>
+        public RPCPeer RegisterIgnoreType<T>()
+        {
+            return RegisterIgnoreType(typeof(T));
+        }
+
+        /// <summary>
+        /// Register a type as being ignroe
+        /// </summary>
+        /// <returns>The RPC peer reference type.</returns>
+        /// <typeparam name="T">The type to register as ignored.</typeparam>
+        public RPCPeer RegisterIgnoreType(Type t)
+        {
+            TypeSerializer.RegisterSerializationAction(t, SerializationAction.Ignore);
+            return this;
+        }
+
+        /// <summary>
+        /// Registers an item to be decomposed as its properties
+        /// </summary>
+        /// <returns>The RPC peer reference type.</returns>
+        /// <param name="filter">An optional filter to select properties with.</param>
+        /// <typeparam name="T">The type to register a decomposer for.</typeparam>
+        public RPCPeer RegisterPropertyDecomposer<T>(Func<PropertyInfo, bool> filter = null)
+        {
+            TypeSerializer.RegisterPropertyDecomposer<T>(filter);
+            return this;
         }
     }
 }

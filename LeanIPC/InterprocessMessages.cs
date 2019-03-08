@@ -6,6 +6,20 @@ using System.Threading.Tasks;
 namespace LeanIPC
 {
     /// <summary>
+    /// A class for signalling that the connection is now closed
+    /// </summary>
+    public class ConnectionClosedException : Exception
+    {
+        /// <summary>
+        /// Initializes a new instance of the <see cref="T:LeanIPC.ConnectionClosedException"/> class.
+        /// </summary>
+        public ConnectionClosedException()
+            : base()
+        {
+        }
+    }
+
+    /// <summary>
     /// Helper class for automating and validating messages send accross the inter-process boundary
     /// </summary>
     public static class InterprocessMessages
@@ -204,10 +218,13 @@ namespace LeanIPC
                     if (types.Length != 1 || types[0] != targettype)
                         throw new ArgumentException($"The {command} command can only be sent with a single {targettype} argument");
 
-                    //We rewire the arguments to fit the well-known layout, such that we transmit only the field, not the struct itself
-                    var tmp = writer.TypeSerializer.SerializeObject(arguments[0]);
-                    types = tmp.Item1;
-                    arguments = tmp.Item2;
+                    //We rewire the arguments to fit the well-known layout, such that we transmit only the fields, not the struct itself
+                    var tmp = writer.TypeSerializer.SerializeObject(arguments[0], targettype);
+                    types = tmp.Item2;
+                    arguments = tmp.Item3;
+
+                    if (targettype == typeof(InvokeRemoteMethodResponse))
+                        types[1] = (Type)arguments[0];
 
                     break;
 
@@ -245,7 +262,7 @@ namespace LeanIPC
             catch(EndOfStreamException)
             {
                 // If we get EoS during the header, we are cleanly terminated
-                throw new TaskCanceledException();
+                throw new ConnectionClosedException();
             }
 
             var command = (Command)await reader.ReadUInt8Async();

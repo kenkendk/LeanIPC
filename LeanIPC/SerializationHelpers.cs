@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 
@@ -110,6 +111,34 @@ namespace LeanIPC
         public static void RegisterIPEndPointSerializers(this TypeSerializer serializer)
         {
             serializer.RegisterCustomSerializer(typeof(IPEndPoint), SerializeIPEndPoint, DeserializeIPEndPoint);
+        }
+
+        /// <summary>
+        /// Registers a custom serializer that decomposes an interface into the properties
+        /// </summary>
+        /// <param name="serializer">The serializer to register on.</param>
+        /// <param name="filter">An optional filter for the properties</param>
+        /// <typeparam name="T">The type to register the custom serializer for.</typeparam>
+        public static void RegisterPropertyDecomposer<T>(this TypeSerializer serializer, Func<System.Reflection.PropertyInfo, bool> filter = null)
+        {
+            filter = filter ?? (x => true);
+            var fields = typeof(T)
+                .GetProperties(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.FlattenHierarchy | System.Reflection.BindingFlags.Public)
+                .Where(x => x.GetIndexParameters().Length == 0)
+                .Where(filter)
+                .ToArray();
+
+            var types = new Type[] { typeof(string[]) }.Concat(fields.Select(x => x.PropertyType)).ToArray();
+            var names = fields.Select(x => x.Name).ToArray();
+
+            serializer.RegisterCustomSerializer(
+                typeof(T),
+                (a, b) => new Tuple<Type[], object[]>(
+                    types,
+                    new object[] { names }.Concat(fields.Select(x => x.GetValue(b, null))).ToArray()
+                ),
+                (a, b) => AutomaticProxy.WrapPropertyDecomposedInstance(null, a, typeof(T), b)
+            );
         }
     }
 }

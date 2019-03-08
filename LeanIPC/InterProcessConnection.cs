@@ -13,9 +13,9 @@ namespace LeanIPC
     public class InterProcessConnection : IDisposable
     {
         /// <summary>
-        /// Flag to enable trace output
+        /// Flag to enable trace output to console
         /// </summary>
-        private const bool TRACE = false;
+        public bool TRACE_TO_CONSOLE = false;
 
         /// <summary>
         /// An interval to determine how often to poll the spawned process
@@ -163,6 +163,15 @@ namespace LeanIPC
         public InterProcessConnection(Stream reader, Stream writer, TypeSerializer serializer = null, IAuthenticationHandler authenticationHandler = null)
             : this(reader, writer, new RemoteObjectHandler(), serializer ?? new TypeSerializer(true, true), authenticationHandler)
         {
+        }
+
+        /// <summary>
+        /// A task that can be used to wait for the initial handshake to complete
+        /// </summary>
+        /// <returns>The awaitable task.</returns>
+        public Task WaitForHandshakeAsync()
+        {
+            return m_initialized.Task;
         }
 
         /// <summary>
@@ -318,7 +327,7 @@ namespace LeanIPC
                 if (preEmitHandler != null)
                     await preEmitHandler();
                 
-                System.Diagnostics.Trace.WriteLineIf(TRACE, $"{(m_isClient ? 'C' : 'S')}: Sending user-data command with ID {reqid}");
+                System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(m_isClient ? 'C' : 'S')}: Sending user-data command with ID {reqid}");
 
                 await InterprocessMessages.WriteRequestAsync(m_writer, reqid, Command.UserData, types, data);
                 if (postEmitHandler != null)
@@ -347,7 +356,7 @@ namespace LeanIPC
         {
             return SendAndWaitAsync(reqid =>
             {
-                System.Diagnostics.Trace.WriteLineIf(TRACE, $"{(m_isClient ? 'C' : 'S')}: Sending request {reqid}: {command}");
+                System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(m_isClient ? 'C' : 'S')}: Sending request {reqid}: {command}");
                 return InterprocessMessages.WriteRequestAsync(m_writer, reqid, command, types, args);
             });
         }
@@ -362,7 +371,7 @@ namespace LeanIPC
         {
             return SendAndWaitAsync(reqid =>
             {
-                System.Diagnostics.Trace.WriteLineIf(TRACE, $"{(m_isClient ? 'C' : 'S')}: Sending command {reqid}: {command} with data {typeof(T)}");
+                System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(m_isClient ? 'C' : 'S')}: Sending command {reqid}: {command} with data {typeof(T)}");
                 return InterprocessMessages.WriteRequestAsync(m_writer, reqid, command, new Type[] { typeof(T) }, new object[] { data });
             });
         }
@@ -411,17 +420,43 @@ namespace LeanIPC
                 System.Threading.Interlocked.Increment(ref m_activeRequests);
             }
 
-            System.Diagnostics.Trace.WriteLineIf(TRACE, $"{(m_isClient ? 'C' : 'S')}: Registered new task {reqid}");
+            System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(m_isClient ? 'C' : 'S')}: Registered new task {reqid}");
 
             using (await m_lock.LockAsync())
                 await request(reqid);
 
-            System.Diagnostics.Trace.WriteLineIf(TRACE, $"{(m_isClient ? 'C' : 'S')}: Waiting on response for {reqid}");
-            var response = await tsk.Key;
+            System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(m_isClient ? 'C' : 'S')}: Waiting on response for {reqid}");
+            ParsedMessage response;
+            try
+            {
+                response = await tsk.Key;
+            }
+            catch(Exception ex)
+            {
+                // If the connection is closed due to dangling errors,
+                // we need to slurp up the error here to ensure that it
+                // is reported as well as the actual parsing result
+                if (m_initialized.Task.IsFaulted)
+                {
+                    // If the reader was simply cancelled, we filter that
+                    if (tsk.Key.IsCanceled)
+                    {
+                        await m_initialized.Task;
+                    }
+                    // Otherwise we return both errors
+                    else
+                    {
+                        throw new AggregateException(m_initialized.Task.Exception, ex);
+                    }
+                }
+
+                // Default is to just report whatever error happened here
+                throw;
+            }
 
             tsk.Value.TrySetResult(true);
 
-            System.Diagnostics.Trace.WriteLineIf(TRACE, $"{(m_isClient ? 'C' : 'S')}: Got response for {reqid}: {response.Type}-{response.Command}");
+            System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(m_isClient ? 'C' : 'S')}: Got response for {reqid}: {response.Type}-{response.Command}");
 
             if (response.Type == MessageType.Error)
                 throw response.Exception ?? new Exception("Null exception in error response from remote host");
@@ -469,14 +504,14 @@ namespace LeanIPC
                 throw new ObjectDisposedException("Cannot send new messages after the connection is closed");
 
             var id = System.Threading.Interlocked.Increment(ref m_requestID);
-            System.Diagnostics.Trace.WriteLineIf(TRACE, $"{(m_isClient ? 'C' : 'S')}: Registered new passthrough {id}");
+            System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(m_isClient ? 'C' : 'S')}: Registered new passthrough {id}");
 
             using (await m_lock.LockAsync())
             {
                 if (preEmitHandler != null)
                     await preEmitHandler();
 
-                System.Diagnostics.Trace.WriteLineIf(TRACE, $"{(m_isClient ? 'C' : 'S')}: Sending user-data passthrough with ID {id}");
+                System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(m_isClient ? 'C' : 'S')}: Sending user-data passthrough with ID {id}");
                 await InterprocessMessages.WritePassthroughAsync(m_writer, id, command, types, data);
 
                 if (postEmitHandler != null)
@@ -504,7 +539,7 @@ namespace LeanIPC
         /// <param name="response">The response message.</param>
         protected async Task HandleResponse(ParsedMessage response)
         {
-            System.Diagnostics.Trace.WriteLineIf(TRACE, $"{(m_isClient ? 'C' : 'S')}: Handling response {response.ID}: {response.Type}-{response.Command}");
+            System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(m_isClient ? 'C' : 'S')}: Handling response {response.ID}: {response.Type}-{response.Command}");
 
             TaskCompletionSource<ParsedMessage> req;
             TaskCompletionSource<bool> resp;
@@ -545,7 +580,7 @@ namespace LeanIPC
         {
             if (message.Command == Command.Ping)
             {
-                System.Diagnostics.Trace.WriteLineIf(TRACE, $"{(m_isClient ? 'C' : 'S')}: Handling ping request, and sending ping response");
+                System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(m_isClient ? 'C' : 'S')}: Handling ping request, and sending ping response");
 
                 Task.Run(() => {
                     RegisterDanglingTask(
@@ -566,13 +601,13 @@ namespace LeanIPC
         {
             if (message.Command == Command.Shutdown)
             {
-                System.Diagnostics.Trace.WriteLineIf(TRACE, $"{(m_isClient ? 'C' : 'S')} - Handling shutdown request, and sending shutdown response");
+                System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(m_isClient ? 'C' : 'S')} - Handling shutdown request, and sending shutdown response");
 
                 RegisterDanglingTask(
                     Task.Run(async () => {
-                        System.Diagnostics.Trace.WriteLineIf(TRACE, $"{(m_isClient ? 'C' : 'S')}: Sending shutdown response");
+                        System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(m_isClient ? 'C' : 'S')}: Sending shutdown response");
                         await SendResponseAsync(message.ID, message.Command, new ShutdownMessage());
-                        System.Diagnostics.Trace.WriteLineIf(TRACE, $"{(m_isClient ? 'C' : 'S')}: Sent shutdown response, disposing");
+                        System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(m_isClient ? 'C' : 'S')}: Sent shutdown response, disposing");
                         m_isShutDown = true;
                         Dispose();
                     })
@@ -612,7 +647,7 @@ namespace LeanIPC
             // Set up the initial handshake
             if (m_isClient)
             {
-                System.Diagnostics.Trace.WriteLineIf(TRACE, "C: Starting handshake");
+                System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, "C: Starting handshake");
 
                 var requestCode = authenticationHandler.CreateRequest();
 
@@ -620,7 +655,7 @@ namespace LeanIPC
                 var reqid = System.Threading.Interlocked.Increment(ref m_requestID);
                 await InterprocessMessages.WriteRequestAsync(m_writer, reqid, Command.Ready, new ReadyMessage(requestCode));
 
-                System.Diagnostics.Trace.WriteLineIf(TRACE, "C: Sent Ready Req");
+                System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, "C: Sent Ready Req");
 
                 // Grab the response and validate the basics
 
@@ -629,7 +664,7 @@ namespace LeanIPC
                 if (resp.Type != MessageType.Response || resp.Command != Command.Ready || !mref.HasValue)
                     throw new Exception("Initial response message was not correct");
 
-                System.Diagnostics.Trace.WriteLineIf(TRACE, "C: Read Ready Resp");
+                System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, "C: Read Ready Resp");
 
                 var m = mref.Value;
 
@@ -647,13 +682,13 @@ namespace LeanIPC
                     throw ex;
                 }
 
-                System.Diagnostics.Trace.WriteLineIf(TRACE, "C: Accepting requests");
+                System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, "C: Accepting requests");
 
                 // We are now ready to accept requests and responses
             }
             else
             {
-                System.Diagnostics.Trace.WriteLineIf(TRACE, "S: Starting handshake");
+                System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, "S: Starting handshake");
 
                 // Wait for the client to initiate, then validate the initial request
                 var req = await WaitWithTimeout(InterprocessMessages.ReadRequestOrResponseAsync(m_reader), RESPONSE_TIMEOUT);
@@ -663,7 +698,7 @@ namespace LeanIPC
                     throw new Exception("Initial response message was not correct");
                 var m = mref.Value;
 
-                System.Diagnostics.Trace.WriteLineIf(TRACE, "S: Got ready message");
+                System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, "S: Got ready message");
 
                 if (m.ProtocolVersion > ProtocolDefinitions.MAX_VERSION || m.ProtocolVersion < ProtocolDefinitions.MIN_VERSION)
                 {
@@ -673,7 +708,7 @@ namespace LeanIPC
                     throw ex;
                 }
 
-                System.Diagnostics.Trace.WriteLineIf(TRACE, "S: Validating handshake");
+                System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, "S: Validating handshake");
 
                 // Verify that we can approve the client
                 if (!authenticationHandler.ValidateRequest(m.AuthenticationCode))
@@ -685,12 +720,12 @@ namespace LeanIPC
                 }
 
 
-                System.Diagnostics.Trace.WriteLineIf(TRACE, "S: Sending reponse");
+                System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, "S: Sending reponse");
 
                 // All is well, send our part of the handshake and continue to the main loop
                 await InterprocessMessages.WriteResponseAsync(m_writer, req.ID, req.Command, new ReadyMessage(authenticationHandler.CreateResponse(m.AuthenticationCode)));
 
-                System.Diagnostics.Trace.WriteLineIf(TRACE, "S: Accepting requests");
+                System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, "S: Accepting requests");
             }
         }
 
@@ -728,13 +763,13 @@ namespace LeanIPC
             try
             {
                 await task;
-                System.Diagnostics.Trace.WriteLineIf(TRACE, $"{(asClient ? "C" : "S")}: Main loop stopped (finished)");
+                System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(asClient ? "C" : "S")}: Main loop stopped (finished)");
             }
             catch (Exception aex)
             {
-                if (aex is TaskCanceledException || aex.InnerException is TaskCanceledException)
+                if (aex is ConnectionClosedException || aex.InnerException is ConnectionClosedException)
                 {
-                    System.Diagnostics.Trace.WriteLineIf(TRACE, $"{(asClient ? "C" : "S")}: Main loop stopped (instance disposed)");
+                    System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(asClient ? "C" : "S")}: Main loop stopped (instance disposed)");
                 }
                 else
                     throw;
@@ -769,7 +804,7 @@ namespace LeanIPC
                 m_initialized.TrySetException(ex);
             }
 
-            System.Diagnostics.Trace.WriteLineIf(TRACE, $"{(asClient ? "C" : "S")}: Entering main loop");
+            System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(asClient ? "C" : "S")}: Entering main loop");
 
             Task pongtask = null;
 
@@ -787,11 +822,11 @@ namespace LeanIPC
                 {
                     await m_initialized.Task;
 
-                    System.Diagnostics.Trace.WriteLineIf(TRACE, $"{(asClient ? "C" : "S")}: Timeout occurred");
+                    System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(asClient ? "C" : "S")}: Timeout occurred");
                     if (pongtask != null && !pongtask.IsCompleted)
                         throw new System.IO.IOException("Connection died, no ping response");
 
-                    System.Diagnostics.Trace.WriteLineIf(TRACE, $"{(asClient ? "C" : "S")}: Sending PING request");
+                    System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(asClient ? "C" : "S")}: Sending PING request");
 
                     // No response, send a ping
                     pongtask = SendPingRequestAsync();
@@ -810,7 +845,7 @@ namespace LeanIPC
                     throw;
                 }
 
-                System.Diagnostics.Trace.WriteLineIf(TRACE, $"{(asClient ? "C" : "S")}: Got message {msg.Type} - {msg.Command} - {msg.ID}");
+                System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(asClient ? "C" : "S")}: Got message {msg.Type} - {msg.Command} - {msg.ID}");
 
                 if (msg.Type == MessageType.Request || msg.Type == MessageType.Passthrough)
                 {
@@ -829,7 +864,7 @@ namespace LeanIPC
                     if (msg.Command != Command.UserData)
                     {
                         // This is not supported, report an error
-                        System.Diagnostics.Trace.WriteLineIf(TRACE, $"{(asClient ? "C" : "S")}: Got unhandled request: {msg.Command} - {msg.ID}");
+                        System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(asClient ? "C" : "S")}: Got unhandled request: {msg.Command} - {msg.ID}");
 
                         RegisterDanglingTask(
                             Task.Run(() => SendErrorResponseAsync(msg.ID, msg.Command, new Exception($"Operation {msg.Command} was not handled, perhaps it is not supported?")))
@@ -838,7 +873,7 @@ namespace LeanIPC
                     else
                     {
                         // If we fall through, allow the user method to handle the request
-                        System.Diagnostics.Trace.WriteLineIf(TRACE, $"{(asClient ? "C" : "S")}: Passing message to user handler");
+                        System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(asClient ? "C" : "S")}: Passing message to user handler");
 
                         // Passthrough do not await completion
                         if (msg.Type == MessageType.Passthrough)
@@ -863,7 +898,7 @@ namespace LeanIPC
                                     }
                                     catch (Exception ex)
                                     {
-                                        System.Diagnostics.Trace.WriteLineIf(TRACE, $"{(asClient ? "C" : "S")}: User handler error on {msg.Command} - {msg.ID}: {ex}");
+                                        System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(asClient ? "C" : "S")}: User handler error on {msg.Command} - {msg.ID}: {ex}");
                                         if (handled)
                                         {
                                             this.Dispose();
@@ -923,7 +958,7 @@ namespace LeanIPC
                 }
             }
 
-            System.Diagnostics.Trace.WriteLineIf(TRACE, $"{(m_isClient ? 'C' : 'S')}: Terminating dangling handler");
+            System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(m_isClient ? 'C' : 'S')}: Terminating dangling handler");
         }
 
         /// <summary>
@@ -946,20 +981,20 @@ namespace LeanIPC
         /// <typeparam name="T">The response data type parameter.</typeparam>
         public async Task SendResponseAsync(long requestID, Command command, Type[] types, object[] arguments)
         {
-            System.Diagnostics.Trace.WriteLineIf(TRACE, $"{(m_isClient ? 'C' : 'S')}: Registering intent to respond to {requestID}: {command}");
+            System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(m_isClient ? 'C' : 'S')}: Registering intent to respond to {requestID}: {command}");
             using (await m_lock.LockAsync())
             {
-                System.Diagnostics.Trace.WriteLineIf(TRACE, $"{(m_isClient ? 'C' : 'S')}: Got lock for intent to respond to {requestID}: {command}");
+                System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(m_isClient ? 'C' : 'S')}: Got lock for intent to respond to {requestID}: {command}");
                 await m_initialized.Task;
                 try
                 {
-                    System.Diagnostics.Trace.WriteLineIf(TRACE, $"{(m_isClient ? 'C' : 'S')}: Sending response to {requestID}: {command}");
+                    System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(m_isClient ? 'C' : 'S')}: Sending response to {requestID}: {command}");
                     await InterprocessMessages.WriteResponseAsync(m_writer, requestID, command, types, arguments);
-                    System.Diagnostics.Trace.WriteLineIf(TRACE, $"{(m_isClient ? 'C' : 'S')}: Has sent response to {requestID}: {command}");
+                    System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(m_isClient ? 'C' : 'S')}: Has sent response to {requestID}: {command}");
                 }
                 catch (Exception ex)
                 {
-                    System.Diagnostics.Trace.WriteLineIf(TRACE, $"{(m_isClient ? 'C' : 'S')}: Lost the connection while responding to {requestID}: {command}, error: {ex.Message}");
+                    System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(m_isClient ? 'C' : 'S')}: Lost the connection while responding to {requestID}: {command}, error: {ex.Message}");
                     this.Dispose();
                     throw;
                 }
@@ -979,14 +1014,14 @@ namespace LeanIPC
             using (await m_lock.LockAsync())
             {
                 await m_initialized.Task;
-                System.Diagnostics.Trace.WriteLineIf(TRACE, $"{(m_isClient ? 'C' : 'S')}: Sending error response to {requestID}: {response}");
+                System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(m_isClient ? 'C' : 'S')}: Sending error response to {requestID}: {response}");
                 try
                 {
                     await InterprocessMessages.WriteErrorResponseAsync(m_writer, requestID, command, response);
                 }
                 catch (Exception ex)
                 {
-                    System.Diagnostics.Trace.WriteLineIf(TRACE, $"{(m_isClient ? 'C' : 'S')}: Lost the connection while responding to {requestID}: {command}, error: {ex.Message}");
+                    System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(m_isClient ? 'C' : 'S')}: Lost the connection while responding to {requestID}: {command}, error: {ex.Message}");
                     this.Dispose();
                     throw;
                 }
@@ -1024,19 +1059,19 @@ namespace LeanIPC
         /// <returns>An awaitable task.</returns>
         public async Task ShutdownAsync()
         {
-            System.Diagnostics.Trace.WriteLineIf(TRACE, $"{(m_isClient ? 'C' : 'S')}: Shutting down");
+            System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(m_isClient ? 'C' : 'S')}: Shutting down");
             try
             {
                 await SendAndWaitAsync(Command.Shutdown, new ShutdownMessage());
             }
             catch(Exception ex)
             {                
-                System.Diagnostics.Trace.WriteLineIf(TRACE, $"{(m_isClient ? 'C' : 'S')}: Shutdown failed: {ex}");
+                System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(m_isClient ? 'C' : 'S')}: Shutdown failed: {ex}");
             }
-            System.Diagnostics.Trace.WriteLineIf(TRACE, $"{(m_isClient ? 'C' : 'S')}: Shutdown complete, disposing");
+            System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(m_isClient ? 'C' : 'S')}: Shutdown complete, disposing");
             m_isShutDown = true;
             Dispose();
-            System.Diagnostics.Trace.WriteLineIf(TRACE, $"{(m_isClient ? 'C' : 'S')}: Shutdown and dispose done");
+            System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(m_isClient ? 'C' : 'S')}: Shutdown and dispose done");
         }
 
         /// <summary>
@@ -1045,16 +1080,16 @@ namespace LeanIPC
         /// <returns>An awaitable task.</returns>
         private async Task RetireAllPendingRequests()
         {
-            System.Diagnostics.Trace.WriteLineIf(TRACE, $"{(m_isClient ? "C" : "S")}: Grabbing lock to cancel all requests");
+            System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(m_isClient ? "C" : "S")}: Grabbing lock to cancel all requests");
             using (await m_lock.LockAsync())
             {
-                System.Diagnostics.Trace.WriteLineIf(TRACE, $"{(m_isClient ? "C" : "S")}: Cancelling {m_requestQueue.Count} requests");
+                System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(m_isClient ? "C" : "S")}: Cancelling {m_requestQueue.Count} requests");
                 foreach (var t in m_requestQueue.Values)
                     t.TrySetCanceled();
                 foreach (var t in m_responseQueue.Values)
                     t.TrySetCanceled();
                 
-                System.Diagnostics.Trace.WriteLineIf(TRACE, $"{(m_isClient ? "C" : "S")}: Done cancelling all {m_requestQueue.Count} requests");
+                System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(m_isClient ? "C" : "S")}: Done cancelling all {m_requestQueue.Count} requests");
 
                 System.Threading.Interlocked.Exchange(ref m_activeRequests, 0);
                 m_requestQueue.Clear();
@@ -1072,19 +1107,19 @@ namespace LeanIPC
         /// <see cref="T:LeanIPC.InterProcessConnection"/> was occupying.</remarks>
         public void Dispose()
         {
-            System.Diagnostics.Trace.WriteLineIf(TRACE, $"{(m_isClient ? 'C' : 'S')}: Disposing instance");
+            System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(m_isClient ? 'C' : 'S')}: Disposing instance");
 
             if (m_initialized.Task.Status == TaskStatus.WaitingForActivation)
                 m_initialized.TrySetCanceled();
             else if (m_initialized.Task.Status == TaskStatus.RanToCompletion)
                 (m_initialized = new TaskCompletionSource<bool>()).TrySetCanceled();
 
-            System.Diagnostics.Trace.WriteLineIf(TRACE, $"{(m_isClient ? 'C' : 'S')}: Disposing instance channels");
+            System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(m_isClient ? 'C' : 'S')}: Disposing instance channels");
 
             m_reader?.Dispose();
             m_writer?.Dispose();
 
-            System.Diagnostics.Trace.WriteLineIf(TRACE, $"{(m_isClient ? 'C' : 'S')}: Finished dispose of instance");
+            System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(m_isClient ? 'C' : 'S')}: Finished dispose of instance");
         }
     }
 }
