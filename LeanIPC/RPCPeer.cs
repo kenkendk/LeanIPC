@@ -427,14 +427,21 @@ namespace LeanIPC
             else if (message.Command == Command.RegisterRemoteObject)
             {
                 var arg = message.Arguments?.FirstOrDefault();
-                if (arg is RegisterRemoteObjectRequest)
+                try
                 {
-                    var req = (RegisterRemoteObjectRequest)arg;
-                    await m_remoteObjects.RegisterRemoteObjectAsync(req.ID, CreateRemoteProxy(req.ObjectType, req.ID));
+                    if (arg is RegisterRemoteObjectRequest)
+                    {
+                        var req = (RegisterRemoteObjectRequest)arg;
+                        await m_remoteObjects.RegisterRemoteObjectAsync(req.ID, CreateRemoteProxy(req.ObjectType, req.ID));
+                    }
+                    else
+                    {
+                        throw new Exception($"Invalid argument for the {nameof(Command.RegisterRemoteObject)} request");
+                    }
                 }
-                else
+                catch (Exception ex)
                 {
-                    throw new Exception($"Invalid argument for the {nameof(Command.RegisterRemoteObject)} request");
+                    await m_connection.SendErrorResponseAsync(message.ID, message.Command, ex);
                 }
                 return true;
             }

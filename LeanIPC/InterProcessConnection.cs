@@ -547,10 +547,12 @@ namespace LeanIPC
             // Remove the pending request
             using (await m_lock.LockAsync())
             {
+                var ex = response.Exception;
+
                 if (!m_requestQueue.TryGetValue(response.ID, out req))
-                    throw new Exception("Attempted to process non-existing request");
+                    throw ex ?? new Exception("Attempted to process non-existing request");
                 if (!m_responseQueue.TryGetValue(response.ID, out resp))
-                    throw new Exception("Attempted to process non-existing request");
+                    throw ex ?? new Exception("Attempted to process non-existing request");
 
                 m_requestQueue.Remove(response.ID);
                 m_responseQueue.Remove(response.ID);
