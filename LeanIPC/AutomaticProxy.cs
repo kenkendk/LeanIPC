@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
@@ -65,6 +66,12 @@ namespace LeanIPC
             {
                 if (!_interfaceCache.ContainsKey(proxytype))
                 {
+                    // NOTE: Some of the code below actually supports a non-interface type,
+                    // but this only works if _all_ methods on the class are virtual
+                    // To avoid confusion, we only allow interfaces to be auto-proxied
+                    if (!proxytype.IsInterface)
+                        throw new ArgumentException($"Cannot generate a proxy for the non-interface type {proxytype}");
+
                     if (!handlertype.GetInterfaces().Any(x => x == typeof(IProxyHelper)))
                         throw new Exception($"The type {handlertype} does not implement {typeof(IProxyHelper)}");
 
@@ -125,6 +132,9 @@ namespace LeanIPC
 
                     foreach (var sourceMethod in explictMethods)
                     {
+                        if (!proxytype.IsInterface)
+                            continue;
+
                         var parameterTypes = sourceMethod.GetParameters().Select(x => x.ParameterType).ToArray();
 
                         // If the proxy type is IDisposable, we need to call the remote dispose before the local
@@ -154,7 +164,8 @@ namespace LeanIPC
 
                             var methods = handlertype
                                 .GetMethods(BindingFlags.Public | BindingFlags.Instance)
-                                .Where(x => x.Name == nameof(IProxyHelper.HandleInvokeMethod));
+                                .Where(x => x.Name == nameof(IProxyHelper.HandleInvokeMethod))
+                                .Where(x => !x.IsGenericMethod);
 
                             methodIL.Emit(OpCodes.Callvirt, methods.First());
                             methodIL.Emit(OpCodes.Pop);
@@ -176,7 +187,13 @@ namespace LeanIPC
 
                     // Add all methods
                     foreach (var sourceMethod in AllImplementedMethods(proxytype, IGNORETYPES))
-                    {                        
+                    {
+                        if (sourceMethod.Name == "Dispose" && sourceMethod.GetParameters().Length == 0 && sourceMethod.ReturnType == typeof(void))
+                            continue;
+
+                        if (!proxytype.IsInterface)
+                            continue;
+
                         var parameterTypes = sourceMethod.GetParameters().Select(x => x.ParameterType).ToArray();
 
                         // Replicate the source method
@@ -206,13 +223,13 @@ namespace LeanIPC
                         if (sourceMethod.ReturnType == typeof(void))
                         {
                             // We discard the null object from the method
-                            methodIL.Emit(OpCodes.Call, methods.Where(x => !x.IsGenericMethodDefinition).First());
+                            methodIL.Emit(OpCodes.Callvirt, methods.First(x => !x.IsGenericMethodDefinition));
                             methodIL.Emit(OpCodes.Pop);
                         }
                         else if (sourceMethod.ReturnType == typeof(Task))
                         {
                             // We return the Task from the underlying call
-                            methodIL.Emit(OpCodes.Call, methods.Where(x => !x.IsGenericMethodDefinition).First());
+                            methodIL.Emit(OpCodes.Callvirt, methods.First(x => !x.IsGenericMethodDefinition));
                         }
                         else
                         {
@@ -223,7 +240,7 @@ namespace LeanIPC
                                 ? sourceMethod.ReturnType.GetGenericArguments().First()
                                 : sourceMethod.ReturnType;
 
-                            methodIL.Emit(OpCodes.Call, methods.Where(x => x.IsGenericMethodDefinition).First().MakeGenericMethod(genericParameter));
+                            methodIL.Emit(OpCodes.Callvirt, methods.First(x => x.IsGenericMethodDefinition).MakeGenericMethod(genericParameter));
                         }
                         methodIL.Emit(OpCodes.Ret);
                     }
@@ -231,6 +248,9 @@ namespace LeanIPC
                     // Add all properties
                     foreach (var sourceProperty in AllImplementedProperties(proxytype, IGNORETYPES))
                     {
+                        if (!proxytype.IsInterface)
+                            continue;
+
                         var indexParameters = sourceProperty.GetIndexParameters().Select(x => x.ParameterType).ToArray();
 
                         var property = typeBuilder.DefineProperty(
@@ -272,7 +292,7 @@ namespace LeanIPC
                                 ? sourceProperty.PropertyType.GetGenericArguments().First()
                                 : sourceProperty.PropertyType;
 
-                            getMethodIL.Emit(OpCodes.Call, baseGetMethod.MakeGenericMethod(genericParameter));
+                            getMethodIL.Emit(OpCodes.Callvirt, baseGetMethod.MakeGenericMethod(genericParameter));
                             getMethodIL.Emit(OpCodes.Ret);
 
                             property.SetGetMethod(getMethod);
@@ -299,7 +319,7 @@ namespace LeanIPC
                             EmitTypeArray(setMethodIL, indexParameters);
                             EmitArgumentArray(setMethodIL, indexParameters, 2);
 
-                            setMethodIL.Emit(OpCodes.Call, handlertype.GetMethod(nameof(IProxyHelper.HandleInvokePropertySet), BindingFlags.Public | BindingFlags.Instance));
+                            setMethodIL.Emit(OpCodes.Callvirt, handlertype.GetMethod(nameof(IProxyHelper.HandleInvokePropertySet), BindingFlags.Public | BindingFlags.Instance));
                             setMethodIL.Emit(OpCodes.Ret);
 
                             property.SetSetMethod(setMethod);
@@ -606,8 +626,7 @@ namespace LeanIPC
             h.m_values = d;
             return p;
         }
-
-    }
+            }
 
 
 }

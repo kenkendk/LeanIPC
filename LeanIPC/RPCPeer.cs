@@ -43,6 +43,11 @@ namespace LeanIPC
         private readonly List<Func<RPCPeer, Type, long, IRemoteInstance>> m_remoteProxies = new List<Func<RPCPeer, Type, long, IRemoteInstance>>();
 
         /// <summary>
+        /// The list of methods used to create a proxy instance from a remote type
+        /// </summary>
+        private readonly List<Func<object, Type, Task>> m_preSendHooks = new List<Func<object, Type, Task>>();
+
+        /// <summary>
         /// The dictionary with automatic proxy generators
         /// </summary>
         private readonly Dictionary<Type, Type> m_automaticProxies = new Dictionary<Type, Type>();
@@ -143,6 +148,7 @@ namespace LeanIPC
         /// </summary>
         /// <param name="asclient">If set to <c>true</c>, connect as a client.</param>
         /// <param name="authenticationHandler">The optional authentication handler.</param>
+        /// <returns>The peer instance</returns>
         public virtual RPCPeer Start(bool asclient, IAuthenticationHandler authenticationHandler = null)
         {
             if (MainTask != null)
@@ -157,13 +163,16 @@ namespace LeanIPC
         /// Adds a new proxy generator method
         /// </summary>
         /// <param name="method">The method used to generate remoting proxies.</param>
-        public void AddProxyGenerator(Func<RPCPeer, Type, long, IRemoteInstance> method)
+        /// <returns>The peer instance</returns>
+        public RPCPeer AddProxyGenerator(Func<RPCPeer, Type, long, IRemoteInstance> method)
         {
             if (method == null)
                 throw new ArgumentNullException(nameof(method));
 
             lock(m_lock)
                 m_remoteProxies.Add(method);
+
+            return this;
         }
 
         /// <summary>
@@ -171,10 +180,18 @@ namespace LeanIPC
         /// </summary>
         /// <param name="remotetype">The type to generate a proxy for.</param>
         /// <param name="localinterface">The local defined interface for the remote object.</param>
-        public void AddAutomaticProxy(Type remotetype, Type localinterface)
+        /// <returns>The peer instance</returns>
+        public RPCPeer AddAutomaticProxy(Type remotetype, Type localinterface)
         {
+            if (localinterface == null)
+                throw new ArgumentNullException(nameof(localinterface));
+            if (!localinterface.IsInterface)
+                throw new ArgumentException($"The type is not an interface: {localinterface}", nameof(localinterface));
+
             lock (m_lock)
                 m_automaticProxies.Add(remotetype, localinterface);
+
+            return this;
         }
 
         /// <summary>
@@ -189,17 +206,30 @@ namespace LeanIPC
         }
 
         /// <summary>
-        /// Adds an allowed type tp the list of allowed types
+        /// Adds a type to the list of allowed types
+        /// </summary>
+        /// <param name="filter">The optional filter used to limit access to the methods and properties in the type</param>
+        /// <typeparam name="T">The type to add.</typeparam>
+        /// <returns>The peer instance</returns>
+        public RPCPeer AddAllowedType<T>(Func<System.Reflection.MemberInfo, object[], bool> filter = null)
+        {
+            return AddAllowedType(typeof(T), filter);
+        }
+
+        /// <summary>
+        /// Adds a type to the list of allowed types
         /// </summary>
         /// <param name="localtype">The type to allow calls for.</param>
         /// <param name="filter">The optional filter used to limit access to the methods and properties in the type</param>
-        public void AddAllowedType(Type localtype, Func<System.Reflection.MemberInfo, object[], bool> filter = null)
+        public RPCPeer AddAllowedType(Type localtype, Func<System.Reflection.MemberInfo, object[], bool> filter = null)
         {
             if (filter == null)
                 filter = (a, b) => true;
 
             lock (m_lock)
                 m_allowedTypes.Add(localtype, filter);
+
+            return this;
         }
 
         /// <summary>
@@ -301,10 +331,14 @@ namespace LeanIPC
                     }
                 }
 
+                if (action == SerializationAction.Fail)
+                    throw new Exception($"Cannot pass item with type {arg.GetType()} ({types[i]})");
+
+                if (m_preSendHooks.Count > 0)
+                    await Task.WhenAll(m_preSendHooks.Select(x => x(arg, tp)));
+
                 if (action == SerializationAction.Reference || m_remoteObjects.IsLocalObject(arg))
                     await RegisterLocalObjectOnRemote(arg, tp);
-                else if (action == SerializationAction.Fail)
-                    throw new Exception($"Cannot pass item with type {arg.GetType()} ({types[i]})");
             }
 
             var res = await m_connection.SendAndWaitAsync(
@@ -552,10 +586,16 @@ namespace LeanIPC
                     if (res.GetType().IsConstructedGenericType)
                     {
                         res = res.GetType().GetProperty("Result").GetValue(res);
+
+                        if (resType.IsConstructedGenericType)
+                            resType = resType.GetGenericArguments().First();
+                        else
+                            resType = typeof(void);
                     }
                     else
                     {
                         res = true;
+                        resType = typeof(void);
                     }
                 }
 
@@ -579,6 +619,9 @@ namespace LeanIPC
 
                 if (fails != null)
                     throw new ArgumentException($"Not configured to transmit an instance of type {fails.Item1.GetType()}{(fails.Item1.GetType() == fails.Item2 ? "" : $" as ({fails.Item2})")}");
+
+                if (m_preSendHooks.Count > 0)
+                    await Task.WhenAll(m_preSendHooks.Select(x => x(res, resType)));
 
                 // If we are sending an object back, register a local reference to it
                 foreach (var el in items.Where(x => x.Item3 == SerializationAction.Reference))
@@ -706,6 +749,48 @@ namespace LeanIPC
         {
             Dispose(true);
         }
+
+        /// <summary>
+        /// Adds a pre-send hook method
+        /// </summary>
+        /// <returns>Thepeer.</returns>
+        /// <param name="callback">The callback function that gets the object and the resolved type.</param>
+        public RPCPeer AddPreSendHook(Func<object, Type, Task> callback)
+        {
+            lock (m_lock)
+                m_preSendHooks.Add(callback ?? throw new ArgumentNullException(nameof(callback)));
+
+            return this;
+        }
+
+        /// <summary>
+        /// Removes a pre send hook.
+        /// </summary>
+        /// <returns><c>true</c>, if pre send hook was removed, <c>false</c> otherwise.</returns>
+        /// <param name="callback">The hook method to remove.</param>
+        public bool RemovePreSendHook(Func<object, Type, Task> callback)
+        {
+            lock (m_lock)
+                return m_preSendHooks.Remove(callback ?? throw new ArgumentNullException(nameof(callback)));
+        }
+
+        /// <summary>
+        /// Registers a method for deserializing an item
+        /// </summary>
+        /// <returns>The custom deserializer.</returns>
+        /// <param name="method">The method that deserializes.</param>
+        /// <typeparam name="T">The type to return parameter.</typeparam>
+        public RPCPeer RegisterCustomDeserializer<T>(Type source, Func<object[], T> method)
+        {
+            TypeSerializer.RegisterCustomSerializer(
+                source,
+                (a, b) => throw new InvalidOperationException("Serialization not supported"),
+                (a, b) => method(b)
+            );
+
+            return this;
+        }
+
 
         /// <summary>
         /// Registers a method for deserializing an item

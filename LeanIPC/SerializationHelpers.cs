@@ -105,12 +105,34 @@ namespace LeanIPC
         }
 
         /// <summary>
+        /// Registers a custom serializer/deserializer for <see cref="EndPoint"/>
+        /// </summary>
+        /// <param name="peer">The peer to register on.</param>
+        /// <returns>The peer instance</returns>
+        public static RPCPeer RegisterEndPointSerializers(this RPCPeer peer)
+        {
+            RegisterEndPointSerializers(peer.TypeSerializer);
+            return peer;
+        }
+
+        /// <summary>
         /// Registers a custom serializer/deserializer for <see cref="IPEndPoint"/>
         /// </summary>
         /// <param name="serializer">The type serializer.</param>
         public static void RegisterIPEndPointSerializers(this TypeSerializer serializer)
         {
             serializer.RegisterCustomSerializer(typeof(IPEndPoint), SerializeIPEndPoint, DeserializeIPEndPoint);
+        }
+
+        /// <summary>
+        /// Registers a custom serializer/deserializer for <see cref="IPEndPoint"/>
+        /// </summary>
+        /// <param name="peer">The peer to register on.</param>
+        /// <returns>The peer instance</returns>
+        public static RPCPeer RegisterIPEndPointSerializers(this RPCPeer peer)
+        {
+            RegisterIPEndPointSerializers(peer.TypeSerializer);
+            return peer;
         }
 
         /// <summary>
@@ -140,5 +162,75 @@ namespace LeanIPC
                 (a, b) => AutomaticProxy.WrapPropertyDecomposedInstance(null, a, typeof(T), b)
             );
         }
+
+        /// <summary>
+        /// Registers a custom serializer that decomposes an interface into the properties
+        /// </summary>
+        /// <param name="peer">The peer to register on.</param>
+        /// <param name="filter">An optional filter for the properties</param>
+        /// <typeparam name="T">The type to register the custom serializer for.</typeparam>
+        public static RPCPeer RegisterPropertyDecomposer<T>(this RPCPeer peer, Func<System.Reflection.PropertyInfo, bool> filter = null)
+        {
+            RegisterPropertyDecomposer<T>(peer.TypeSerializer, filter);
+            return peer;
+        }
+
+        ///// <summary>
+        ///// Register streams as being served locally (passed by reference to the remote)
+        ///// </summary>
+        ///// <returns>The peer instance</returns>
+        ///// <param name="peer">Peer.</param>
+        //public static RPCPeer RegisterLocallyServedStream(this RPCPeer peer)
+        //{
+        //    return 
+        //        peer
+
+        //        // Convert any stream to the interface type
+        //        //peer.RegisterCustomSerializer<System.IO.Stream>(
+        //        //    x => new Tuple<Type[], object[]>(
+        //        //        new Type[] { typeof(StreamSupport.IRemoteStream) },
+        //        //        new object[] { new StreamSupport.LocalStreamProxy((System.IO.Stream)x) } )
+        //        //)
+
+        //        // And make sure we allow calls on the stream interface, and pass it by reference
+        //        .AddPreSendHook(async (arg, type) => {
+        //            if (arg is System.IO.Stream s)
+        //            {
+        //                // TODO: This is really dirty... we register multiple instances with
+        //                // the same ID and do not clean up old references
+
+        //                // Check if the stream is already registered
+        //                if (await peer.RemoteHandler.RegisterLocalObjectAsync(arg))
+        //                {
+        //                    var id = peer.RemoteHandler.GetLocalHandle(arg);
+
+        //                    // Hook up the wrapper to the ID
+        //                    peer.RemoteHandler.MonkeySetLocalObject(new StreamSupport.LocalStreamProxy(s), id);
+
+        //                    // Manually register the handle as a custom type
+        //                    await peer.IPC.SendPassthroughAsync(Command.RegisterRemoteObject, new RegisterRemoteObjectRequest(typeof(StreamSupport.IRemoteStream), id));
+        //                }
+        //            }
+        //        })
+
+        //        .RegisterByRefType<System.IO.Stream>()
+        //        .RegisterLocallyServedType<StreamSupport.IRemoteStream>();
+        //}
+
+        ///// <summary>
+        ///// Registers a proxy for a remote stream reference.
+        ///// </summary>
+        ///// <returns>The peer instance</returns>
+        ///// <param name="peer">Peer.</param>
+        //public static RPCPeer RegisterProxyForRemoteStream(this RPCPeer peer)
+        //{
+        //    return peer
+        //        .AddProxyGenerator((p, type, id) =>
+        //            new StreamSupport.RemoteStreamProxy(
+        //                (StreamSupport.IRemoteStream)AutomaticProxy.WrapRemote(p, type, typeof(StreamSupport.IRemoteStream), id)
+        //            )
+        //        );
+
+        //}
     }
 }
