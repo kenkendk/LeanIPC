@@ -271,6 +271,27 @@ namespace LeanIPC
         }
 
         /// <summary>
+        /// Writes a byte array to the stream
+        /// </summary>
+        /// <returns>The byte array to write.</returns>
+        /// <param name="item">The array to write.</param>
+        private async Task WriteByteArray(byte[] item)
+        {
+            var remain = item.LongLength;
+            var offset = 0L;
+            while (remain > 0)
+            {
+                if ((m_writebuffer.Length - m_writecount) < remain)
+                    await FlushAsync();
+                var bytes = (int)Math.Min(remain, m_writebuffer.Length);
+                Array.Copy(item, offset, m_writebuffer, m_writecount, bytes);
+                m_writecount += bytes;
+                offset += bytes;
+                remain -= bytes;
+            }
+        }
+
+        /// <summary>
         /// Writes a string to the stream
         /// </summary>
         /// <returns>An awaitable task.</returns>
@@ -441,8 +462,17 @@ namespace LeanIPC
                 System.Diagnostics.Trace.WriteLineIf(TRACE, $"Array-Write: {item.LongLength} items");
 
                 await WriteInt64Async(item.LongLength);
-                foreach (var n in item)
-                    await WriteAnyAsync<T>(n);
+
+                // Optimize writing byte arrays
+                if (typeof(T) == typeof(byte) && item.LongLength > 0)
+                {
+                    await WriteByteArray((byte[])(object)item);
+                }
+                else
+                {
+                    foreach (var n in item)
+                        await WriteAnyAsync<T>(n);
+                }
 
                 System.Diagnostics.Trace.WriteLineIf(TRACE, $"Array-Wrote: {item.LongLength} items");
             }
@@ -1199,7 +1229,6 @@ namespace LeanIPC
         /// Reads a string value from the stream without reading a header
         /// </summary>
         /// <returns>The string value.</returns>
-
         public async Task<Exception> ReadExceptionAsync()
         {
             var message = await ReadStringAsync();
@@ -1213,7 +1242,6 @@ namespace LeanIPC
         /// Reads an array value from the stream without reading a header
         /// </summary>
         /// <returns>The string value.</returns>
-
         public async Task<T[]> ReadArrayAsync<T>()
         {
             var length = await ReadInt64Async();
@@ -1221,8 +1249,16 @@ namespace LeanIPC
                 return null;
 
             var res = new T[length];
-            for (var i = 0; i < length; i++)
-                res[i] = await ReadAnyAsync<T>();
+            if (typeof(T) == typeof(byte) && length < int.MaxValue)
+            {
+                var tmp = await ForceReadAsync((int)length);
+                Array.Copy(tmp, res, length);
+            }
+            else
+            {
+                for (var i = 0; i < length; i++)
+                    res[i] = await ReadAnyAsync<T>();
+            }
 
             return res;
         }
