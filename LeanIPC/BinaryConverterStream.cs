@@ -878,10 +878,12 @@ namespace LeanIPC
         {
             if (m_writecount > 0)
             {
+                System.Diagnostics.Trace.WriteLineIf(TRACE, $"Flushing write buffer with {m_writecount} bytes");
                 await m_stream.WriteAsync(m_writebuffer, 0, m_writecount);
-                await m_stream.FlushAsync();
                 m_writecount = 0;
             }
+            System.Diagnostics.Trace.WriteLineIf(TRACE, $"Flushing write buffer");
+            await m_stream.FlushAsync();
         }
 
         /// <summary>
