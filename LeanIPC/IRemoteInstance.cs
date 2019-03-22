@@ -246,7 +246,7 @@ namespace LeanIPC
             if (m == null)
                 throw new MissingMethodException($"No method with the signature {name}({string.Join(",", types.Select(x => x.FullName))})");
             
-            return m_peer.HandleInvokeMethodAsync<T>(m_handle, m, arguments, false);
+            return m_peer.InvokeRemoteMethodAsync<T>(m_handle, m, arguments, false);
         }
 
         /// <summary>
@@ -305,7 +305,7 @@ namespace LeanIPC
             var p = m_typelookups.Select(x => x.GetProperty(name, indextypes)).FirstOrDefault(x => x != null);
             if (p == null)
                 throw new MissingMethodException($"No property with the signature {indextypes.First().FullName} {name}({string.Join(",", indextypes.Skip(1).Select(x => x.FullName))})");
-            return m_peer.HandleInvokeMethodAsync<T>(m_handle, p, indexarguments, false);
+            return m_peer.InvokeRemoteMethodAsync<T>(m_handle, p, indexarguments, false);
         }
 
         /// <summary>

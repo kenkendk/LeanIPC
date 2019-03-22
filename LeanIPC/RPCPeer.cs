@@ -367,7 +367,7 @@ namespace LeanIPC
         /// <param name="arguments">The values given to the method when invoked.</param>
         /// <param name="isWrite">If set to <c>true</c> this is a write field or property request.</param>
         /// <typeparam name="T">The return type</typeparam>
-        public async Task<T> HandleInvokeMethodAsync<T>(long handle, System.Reflection.MemberInfo method, object[] arguments, bool isWrite)
+        public async Task<T> InvokeRemoteMethodAsync<T>(long handle, System.Reflection.MemberInfo method, object[] arguments, bool isWrite)
         {
             return (T)await InvokeRemoteMethodAsync(handle, method, arguments, isWrite);
         }
@@ -848,7 +848,7 @@ namespace LeanIPC
         /// <typeparam name="T">The return type parameter.</typeparam>
         public Task<T> CallRemoteStaticMethod<T>(MethodInfo method, params object[] args)
         {
-            return HandleInvokeMethodAsync<T>(0, method, args, false);
+            return InvokeRemoteMethodAsync<T>(0, method, args, false);
         }
 
         /// <summary>
