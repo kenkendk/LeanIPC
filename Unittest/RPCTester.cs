@@ -21,7 +21,7 @@ namespace Unittest
                 var client = new RPCPeer(setup.Client);
                 var server = new RPCPeer(setup.Server, new Type[] { typeof(System.IO.Directory) }, (m, a) => m.Name == nameof(System.IO.Directory.GetCurrentDirectory));
 
-                var result = client.InvokeRemoteMethodAsync<string>(0, typeof(System.IO.Directory).GetMethod(nameof(System.IO.Directory.GetCurrentDirectory)), null, false).Result;
+                var result = client.InvokeRemoteMethodAsync<string>(0L, typeof(System.IO.Directory).GetMethod(nameof(System.IO.Directory.GetCurrentDirectory)), null, false).Result;
                 if (result != System.IO.Directory.GetCurrentDirectory())
                     throw new Exception("Failed to get the correct ");
 
@@ -189,13 +189,13 @@ namespace Unittest
 
             public int Value 
             { 
-                get => RemoteInvokePropertyGet<int>(nameof(RemoteInt.Value), null, null);
-                set => RemoteInvokePropertySet(nameof(RemoteInt.Value), value, null, null);
+                get => HandleInvokePropertyGet<int>(nameof(RemoteInt.Value), null, null);
+                set => HandleInvokePropertySet(nameof(RemoteInt.Value), value, null, null);
             }
 
             public IRemoteInt Add(IRemoteInt other)
             {
-                return RemoteInvokeMethod<IRemoteInt>(nameof(RemoteInt.Add), new Type[] { typeof(IRemoteInt) }, new object[] { other });
+                return HandleInvokeMethod<IRemoteInt>(nameof(RemoteInt.Add), new Type[] { typeof(IRemoteInt) }, new object[] { other });
             }
         }
 
@@ -294,11 +294,11 @@ namespace Unittest
 
             public int this[int a, int b] 
             {
-                get => RemoteInvokePropertyGet<int>("Item", new Type[] { typeof(int), typeof(int) }, new object[] { a, b });
-                set => RemoteInvokePropertySet("Item", value, new Type[] { typeof(int), typeof(int) }, new object[] { a, b }); 
+                get => HandleInvokePropertyGet<int>("Item", new Type[] { typeof(int), typeof(int) }, new object[] { a, b });
+                set => HandleInvokePropertySet("Item", value, new Type[] { typeof(int), typeof(int) }, new object[] { a, b }); 
             }
 
-            public int V => RemoteInvokePropertyGet<int>(nameof(V), null, null);
+            public int V => HandleInvokePropertyGet<int>(nameof(V), null, null);
         }
 
         [Test]
@@ -403,16 +403,16 @@ namespace Unittest
             {
             }
 
-            public Task<int> ValueAsync => RemoteInvokePropertyGetAsync<int>(nameof(ValueAsync), null, null);
+            public Task<int> ValueAsync => HandleInvokePropertyGetAsync<int>(nameof(ValueAsync), null, null);
 
             public Task SetValueAsync(int value)
             {
-                return RemoteInvokeMethodAsync(nameof(SetValueAsync), new Type[] { typeof(int) }, new object[] { value });
+                return HandleInvokeMethodAsync(nameof(SetValueAsync), new Type[] { typeof(int) }, new object[] { value });
             }
 
             public Task<int> GetValueAsync()
             {
-                return RemoteInvokeMethodAsync<int>(nameof(GetValueAsync), null, null);
+                return HandleInvokeMethodAsync<int>(nameof(GetValueAsync), null, null);
             }
         }
 
@@ -423,16 +423,16 @@ namespace Unittest
             {
             }
 
-            public Task<int> Value => RemoteInvokePropertyGetAsync<int>(nameof(Value), null, null);
+            public Task<int> Value => HandleInvokePropertyGetAsync<int>(nameof(Value), null, null);
 
             public Task SetValue(int value)
             {
-                return RemoteInvokeMethodAsync(nameof(SetValue), new Type[] { typeof(int) }, new object[] { value });
+                return HandleInvokeMethodAsync(nameof(SetValue), new Type[] { typeof(int) }, new object[] { value });
             }
 
             public Task<int> GetValue()
             {
-                return RemoteInvokeMethodAsync<int>(nameof(GetValue), null, null);
+                return HandleInvokeMethodAsync<int>(nameof(GetValue), null, null);
             }
 
         }
@@ -444,16 +444,16 @@ namespace Unittest
             {
             }
 
-            public int ValueAsync => RemoteInvokePropertyGetAsync<int>(nameof(ValueAsync), null, null).Result;
+            public int ValueAsync => HandleInvokePropertyGetAsync<int>(nameof(ValueAsync), null, null).Result;
 
             public void SetValueAsync(int value)
             {
-                RemoteInvokeMethodAsync(nameof(SetValueAsync), new Type[] { typeof(int) }, new object[] { value }).Wait();
+                HandleInvokeMethodAsync(nameof(SetValueAsync), new Type[] { typeof(int) }, new object[] { value }).Wait();
             }
 
             public int GetValueAsync()
             {
-                return RemoteInvokeMethodAsync<int>(nameof(GetValueAsync), null, null).Result;
+                return HandleInvokeMethodAsync<int>(nameof(GetValueAsync), null, null).Result;
             }
         }
 
