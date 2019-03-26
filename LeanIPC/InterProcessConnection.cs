@@ -307,10 +307,13 @@ namespace LeanIPC
                 throw new ObjectDisposedException("Cannot send new requests when the connection is closed");
             
             id = System.Threading.Interlocked.Increment(ref m_requestID);
+
+            // Because the handler methods may block, we need to ensure that they are executed asynchronously
+            // otherwise the message handler will lock up when waiting for the handling code to complere
             return
                 new KeyValuePair<Task<ParsedMessage>, TaskCompletionSource<bool>>(
-                    (m_requestQueue[id] = new TaskCompletionSource<ParsedMessage>()).Task,
-                    m_responseQueue[id] = new TaskCompletionSource<bool>()
+                    (m_requestQueue[id] = new TaskCompletionSource<ParsedMessage>(TaskCreationOptions.RunContinuationsAsynchronously)).Task,
+                    m_responseQueue[id] = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously)
                 );
         }
 
