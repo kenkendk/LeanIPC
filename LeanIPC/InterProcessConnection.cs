@@ -771,6 +771,10 @@ namespace LeanIPC
             {
                 if (aex is ConnectionClosedException || aex.InnerException is ConnectionClosedException)
                 {
+                    System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(asClient ? "C" : "S")}: Main loop stopped (connection closed)");
+                }
+                else if (m_isShutDown && (aex is TaskCanceledException || aex.InnerException is TaskCanceledException))
+                {
                     System.Diagnostics.Trace.WriteLineIf(TRACE_TO_CONSOLE, $"{(asClient ? "C" : "S")}: Main loop stopped (instance disposed)");
                 }
                 else

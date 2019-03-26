@@ -48,9 +48,8 @@ namespace Unittest
 
             while(!allt.Wait(5000))
             {
-                Console.WriteLine();                
+                Console.WriteLine(" *** Hung for 5s on shutdown ...");                
             }
-
         }
 
         public async Task<T> GuardedOperationAsync<T>(Func<Task<T>> method)
