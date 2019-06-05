@@ -122,7 +122,7 @@ namespace LeanIPC
                     // Since we map this directly, we can treat property access as methods
                     var explictMethods =
                         (
-                            interfaces.Contains(typeof(IRemoteInstance))
+                            interfaces.Contains(typeof(IRemoteInstance)) || proxytype.GetInterfaces().Contains(typeof(IRemoteInstance))
                             ? typeof(IRemoteInstance).GetMethods(BindingFlags.DeclaredOnly | BindingFlags.Public | BindingFlags.Instance)
                             : new MethodInfo[0]
                         )
