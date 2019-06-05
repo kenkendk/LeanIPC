@@ -274,7 +274,17 @@ namespace LeanIPC
             types = types ?? Type.EmptyTypes;
             var m = m_typelookups.Select(x => x.GetMethod(name, types)).FirstOrDefault(x => x != null);
             if (m == null)
+            {
+                // If the remote type does not have the IDisposable interface, just call our local Dispose method
+                if (name == nameof(IDisposable.Dispose) && (types?.Length == 0))
+                {
+                    this.Dispose();
+                    return Task.FromResult<object>(null);
+                }
+
+                // If this was not a dispose call, it is an error
                 throw new MissingMethodException($"No method with the signature {name}({string.Join(",", types.Select(x => x.FullName))})");
+            }
             return m_peer.InvokeRemoteMethodAsync(m_handle, m, arguments, false);
         }
 
