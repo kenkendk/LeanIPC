@@ -214,6 +214,8 @@ namespace Unittest
                 // Let the client/server pass the object by reference
                 client.TypeSerializer.RegisterSerializationAction(typeof(RemoteInt), SerializationAction.Reference);
                 server.TypeSerializer.RegisterSerializationAction(typeof(RemoteInt), SerializationAction.Reference);
+                client.TypeSerializer.RegisterSerializationAction(typeof(IRemoteInt), SerializationAction.Reference);
+                server.TypeSerializer.RegisterSerializationAction(typeof(IRemoteInt), SerializationAction.Reference);
 
                 // Create a remote object
                 using (var serverInt = client.InvokeRemoteMethodAsync<IRemoteIntProxy>(0, typeof(RemoteInt).GetConstructor(new Type[] { typeof(int) }), new object[] { 4 }, false).Result)
@@ -233,19 +235,23 @@ namespace Unittest
         {
             using (var setup = new ClientServerTester(FailMethod, FailMethod))
             {
-                var client = new RPCPeer(setup.Client, typeof(RemoteInt));
-                var server = new RPCPeer(setup.Server, typeof(RemoteInt));
+                var client = new RPCPeer(setup.Client);
+                var server = new RPCPeer(setup.Server);
 
                 // Let the client/server pass the object by reference
-                client.TypeSerializer.RegisterSerializationAction(typeof(RemoteInt), SerializationAction.Reference);
-                server.TypeSerializer.RegisterSerializationAction(typeof(RemoteInt), SerializationAction.Reference);
+                server.RegisterLocallyServedType(typeof(RemoteInt));
+                client.RegisterLocallyServedType(typeof(RemoteInt));
+                server.RegisterLocallyServedType(typeof(IRemoteInt));
+                client.RegisterLocallyServedType(typeof(IRemoteInt));
 
-                // Register automatic proxy generation
-                client.AddAutomaticProxy(typeof(RemoteInt), typeof(IRemoteIntProxy));
-                server.AddAutomaticProxy(typeof(RemoteInt), typeof(IRemoteIntProxy));
+                // Let the client/server automatically wrap the remote
+                server.RegisterLocalProxyForRemote<RemoteInt, IRemoteIntProxy>();
+                client.RegisterLocalProxyForRemote<RemoteInt, IRemoteIntProxy>();
+                server.RegisterLocalProxyForRemote<IRemoteInt, IRemoteIntProxy>();
+                client.RegisterLocalProxyForRemote<IRemoteInt, IRemoteIntProxy>();
 
                 // Create a remote object
-                using(var serverInt = client.CreateAsync<IRemoteIntProxy>(typeof(RemoteInt), 4).Result)
+                using (var serverInt = client.CreateAsync<IRemoteIntProxy>(typeof(RemoteInt), 4).Result)
                 {
                     // Invoke the remote side with a local object
                     var res = serverInt.Add(new RemoteInt(6));
