@@ -1,9 +1,0 @@
-language: csharp
-solution: LeanIPC.sln
-dotnet: 2.0.0
-install:
-  - nuget restore LeanIPC.sln
-  - nuget install NUnit.Runners -Version 3.4.0 -OutputDirectory testrunner
-script:
-  - msbuild /p:Configuration=Release LeanIPC.sln
-  - mono ./testrunner/NUnit.ConsoleRunner.3.4.0/tools/nunit3-console.exe ./Unittest/bin/Release/Unittest.dll
